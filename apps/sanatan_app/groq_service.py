@@ -1,6 +1,6 @@
 """Groq AI service for generating shloka explanations."""
 from groq import Groq
-from config import settings
+from django.conf import settings
 from typing import Optional
 import logging
 
@@ -11,14 +11,14 @@ class GroqService:
     """Service for interacting with Groq API."""
     
     def __init__(self):
-        self.client = Groq(api_key=settings.groq_api_key)
+        self.client = Groq(api_key=settings.GROQ_API_KEY)
         self.model = "openai/gpt-oss-20b"  # Updated to use active model
     
     def generate_explanation(
         self,
         shloka: dict,
         explanation_type: str = "summary"
-    ) -> tuple[str, str]:
+    ) -> tuple:
         """
         Generate explanation for a shloka.
         

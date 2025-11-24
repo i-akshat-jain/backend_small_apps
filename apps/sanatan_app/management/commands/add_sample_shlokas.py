@@ -1,17 +1,9 @@
 """
-Script to add sample shlokas to the database.
-Run this after setting up your .env file and database schema.
+Django management command to add sample shlokas to the database.
+Run: python manage.py add_sample_shlokas
 """
-import sys
-import os
-from pathlib import Path
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from database import SessionLocal
-from models import ShlokaORM
-from uuid import uuid4
+from django.core.management.base import BaseCommand
+from apps.sanatan_app.models import Shloka
 
 # Sample Bhagavad Gita shlokas
 SAMPLE_SHLOKAS = [
@@ -53,33 +45,38 @@ SAMPLE_SHLOKAS = [
 ]
 
 
-def add_shlokas():
-    """Add sample shlokas to the database."""
-    db = SessionLocal()
-    
-    try:
-        print("Adding sample shlokas to database...")
+class Command(BaseCommand):
+    help = 'Add sample shlokas to the database'
+
+    def handle(self, *args, **options):
+        """Add sample shlokas to the database."""
+        self.stdout.write("Adding sample shlokas to database...")
+        
+        added_count = 0
+        skipped_count = 0
         
         for shloka_data in SAMPLE_SHLOKAS:
             try:
                 # Check if shloka already exists
-                existing = db.query(ShlokaORM).filter(
-                    ShlokaORM.book_name == shloka_data["book_name"],
-                    ShlokaORM.chapter_number == shloka_data["chapter_number"],
-                    ShlokaORM.verse_number == shloka_data["verse_number"]
+                existing = Shloka.objects.filter(
+                    book_name=shloka_data["book_name"],
+                    chapter_number=shloka_data["chapter_number"],
+                    verse_number=shloka_data["verse_number"]
                 ).first()
                 
                 if existing:
-                    print(
-                        f"Shloka {shloka_data['book_name']} "
-                        f"Chapter {shloka_data['chapter_number']}, "
-                        f"Verse {shloka_data['verse_number']} already exists. Skipping."
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Shloka {shloka_data['book_name']} "
+                            f"Chapter {shloka_data['chapter_number']}, "
+                            f"Verse {shloka_data['verse_number']} already exists. Skipping."
+                        )
                     )
+                    skipped_count += 1
                     continue
                 
                 # Create new shloka
-                shloka = ShlokaORM(
-                    id=uuid4(),
+                shloka = Shloka.objects.create(
                     book_name=shloka_data["book_name"],
                     chapter_number=shloka_data["chapter_number"],
                     verse_number=shloka_data["verse_number"],
@@ -87,29 +84,27 @@ def add_shlokas():
                     transliteration=shloka_data.get("transliteration")
                 )
                 
-                db.add(shloka)
-                db.commit()
-                
-                print(
-                    f"✓ Added: {shloka_data['book_name']} "
-                    f"Chapter {shloka_data['chapter_number']}, "
-                    f"Verse {shloka_data['verse_number']} (ID: {shloka.id})"
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"✓ Added: {shloka_data['book_name']} "
+                        f"Chapter {shloka_data['chapter_number']}, "
+                        f"Verse {shloka_data['verse_number']} (ID: {shloka.id})"
+                    )
                 )
+                added_count += 1
+                
             except Exception as e:
-                db.rollback()
-                print(f"✗ Error adding shloka {shloka_data['book_name']} "
-                      f"Chapter {shloka_data['chapter_number']}, "
-                      f"Verse {shloka_data['verse_number']}: {str(e)}")
+                self.stdout.write(
+                    self.style.ERROR(
+                        f"✗ Error adding shloka {shloka_data['book_name']} "
+                        f"Chapter {shloka_data['chapter_number']}, "
+                        f"Verse {shloka_data['verse_number']}: {str(e)}"
+                    )
+                )
         
-        print("\nDone!")
-    except Exception as e:
-        db.rollback()
-        print(f"Error: {str(e)}")
-        raise
-    finally:
-        db.close()
-
-
-if __name__ == "__main__":
-    add_shlokas()
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"\nDone! Added {added_count} shlokas, skipped {skipped_count} existing ones."
+            )
+        )
 
