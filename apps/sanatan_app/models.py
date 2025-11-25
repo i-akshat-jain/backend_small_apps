@@ -1,6 +1,7 @@
 """Django models for Sanatan App."""
 from django.db import models
 from django.core.validators import MinValueValidator
+from django.contrib.auth.hashers import make_password, check_password
 import uuid
 
 
@@ -71,10 +72,18 @@ class User(TimestampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.TextField()
     email = models.EmailField(unique=True, db_index=True)
-    password = models.TextField()  # Should be hashed
+    password = models.TextField()  # Stored as hashed password
 
     class Meta:
         db_table = 'users'
+
+    def set_password(self, raw_password):
+        """Hash and set the password."""
+        self.password = make_password(raw_password)
+
+    def check_password(self, raw_password):
+        """Check if the provided password matches the hashed password."""
+        return check_password(raw_password, self.password)
 
     def __str__(self):
         return self.email

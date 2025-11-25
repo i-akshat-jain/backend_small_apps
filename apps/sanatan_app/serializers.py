@@ -1,6 +1,7 @@
 """Serializers for Sanatan App API."""
 from rest_framework import serializers
-from .models import Shloka, ShlokaExplanation, ReadingType
+from rest_framework.validators import UniqueValidator
+from .models import Shloka, ShlokaExplanation, ReadingType, User
 
 
 class ShlokaSerializer(serializers.ModelSerializer):
@@ -44,4 +45,69 @@ class ShlokaResponseSerializer(serializers.Serializer):
     shloka = ShlokaSerializer()
     summary = ExplanationSerializer(allow_null=True, required=False)
     detailed = ExplanationSerializer(allow_null=True, required=False)
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """Serializer for User model (read-only, excludes password)."""
+    
+    class Meta:
+        model = User
+        fields = ['id', 'name', 'email', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class SignupSerializer(serializers.ModelSerializer):
+    """Serializer for user signup."""
+    email = serializers.EmailField(
+        required=True,
+        validators=[UniqueValidator(queryset=User.objects.all(), message="A user with this email already exists.")]
+    )
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        min_length=8,
+        style={'input_type': 'password'},
+        help_text="Password must be at least 8 characters long."
+    )
+    password_confirm = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={'input_type': 'password'},
+        help_text="Enter the same password as above, for verification."
+    )
+
+    class Meta:
+        model = User
+        fields = ['id', 'name', 'email', 'password', 'password_confirm', 'created_at']
+        read_only_fields = ['id', 'created_at']
+        extra_kwargs = {
+            'name': {'required': True},
+        }
+
+    def validate(self, attrs):
+        """Validate that passwords match."""
+        if attrs['password'] != attrs['password_confirm']:
+            raise serializers.ValidationError({
+                "password_confirm": "Password fields didn't match."
+            })
+        return attrs
+
+    def create(self, validated_data):
+        """Create a new user with hashed password."""
+        validated_data.pop('password_confirm')
+        password = validated_data.pop('password')
+        user = User.objects.create(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+
+
+class LoginSerializer(serializers.Serializer):
+    """Serializer for user login."""
+    email = serializers.EmailField(required=True)
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={'input_type': 'password'}
+    )
 

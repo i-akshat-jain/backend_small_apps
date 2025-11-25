@@ -2,10 +2,17 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
-from .models import Shloka, ShlokaExplanation
-from .serializers import ShlokaSerializer, ExplanationSerializer
+from .models import Shloka, ShlokaExplanation, User
+from .serializers import (
+    ShlokaSerializer, 
+    ExplanationSerializer, 
+    SignupSerializer, 
+    LoginSerializer,
+    UserSerializer
+)
 from .services import ShlokaService
 import logging
 
@@ -260,3 +267,251 @@ class RootView(APIView):
             },
             'errors': None
         }, status=status.HTTP_200_OK)
+
+
+class SignupView(APIView):
+    """
+    User signup endpoint.
+    
+    API Path: POST /api/auth/signup
+    """
+    
+    @extend_schema(
+        request=SignupSerializer,
+        responses={
+            201: inline_serializer(
+                name='SignupResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Create a new user account",
+        summary="User signup",
+        tags=["Authentication"],
+    )
+    def post(self, request):
+        """
+        Create a new user account.
+        
+        API Path: POST /api/auth/signup
+        """
+        try:
+            serializer = SignupSerializer(data=request.data)
+            if serializer.is_valid():
+                user = serializer.save()
+                
+                # Generate JWT tokens
+                refresh = RefreshToken.for_user(user)
+                
+                # Serialize user data (without password)
+                user_serializer = UserSerializer(user)
+                
+                return Response({
+                    'message': 'User created successfully',
+                    'data': {
+                        'user': user_serializer.data,
+                        'tokens': {
+                            'access': str(refresh.access_token),
+                            'refresh': str(refresh),
+                        }
+                    },
+                    'errors': None
+                }, status=status.HTTP_201_CREATED)
+            else:
+                return Response({
+                    'message': 'Validation error',
+                    'data': None,
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error in signup: {error_message}")
+            return Response({
+                'message': 'Failed to create user',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class LoginView(APIView):
+    """
+    User login endpoint.
+    
+    API Path: POST /api/auth/login
+    """
+    
+    @extend_schema(
+        request=LoginSerializer,
+        responses={
+            200: inline_serializer(
+                name='LoginResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            401: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Login with email and password to get JWT tokens",
+        summary="User login",
+        tags=["Authentication"],
+    )
+    def post(self, request):
+        """
+        Login with email and password.
+        
+        API Path: POST /api/auth/login
+        """
+        try:
+            serializer = LoginSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response({
+                    'message': 'Validation error',
+                    'data': None,
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            email = serializer.validated_data['email']
+            password = serializer.validated_data['password']
+            
+            try:
+                user = User.objects.get(email=email)
+            except User.DoesNotExist:
+                return Response({
+                    'message': 'Invalid credentials',
+                    'data': None,
+                    'errors': {'detail': 'Invalid email or password'}
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Check password
+            if not user.check_password(password):
+                return Response({
+                    'message': 'Invalid credentials',
+                    'data': None,
+                    'errors': {'detail': 'Invalid email or password'}
+                }, status=status.HTTP_401_UNAUTHORIZED)
+            
+            # Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
+            
+            # Serialize user data (without password)
+            user_serializer = UserSerializer(user)
+            
+            return Response({
+                'message': 'Login successful',
+                'data': {
+                    'user': user_serializer.data,
+                    'tokens': {
+                        'access': str(refresh.access_token),
+                        'refresh': str(refresh),
+                    }
+                },
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error in login: {error_message}")
+            return Response({
+                'message': 'Failed to login',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class TokenRefreshView(APIView):
+    """
+    Refresh JWT access token.
+    
+    API Path: POST /api/auth/refresh
+    """
+    
+    @extend_schema(
+        request=inline_serializer(
+            name='TokenRefreshRequest',
+            fields={
+                'refresh': OpenApiTypes.STR,
+            }
+        ),
+        responses={
+            200: inline_serializer(
+                name='TokenRefreshResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            401: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Refresh access token using refresh token",
+        summary="Refresh token",
+        tags=["Authentication"],
+    )
+    def post(self, request):
+        """
+        Refresh access token.
+        
+        API Path: POST /api/auth/refresh
+        """
+        try:
+            refresh_token = request.data.get('refresh')
+            if not refresh_token:
+                return Response({
+                    'message': 'Refresh token is required',
+                    'data': None,
+                    'errors': {'detail': 'Refresh token is required'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                refresh = RefreshToken(refresh_token)
+                access_token = refresh.access_token
+                
+                return Response({
+                    'message': 'Token refreshed successfully',
+                    'data': {
+                        'access': str(access_token),
+                    },
+                    'errors': None
+                }, status=status.HTTP_200_OK)
+            except Exception as e:
+                return Response({
+                    'message': 'Invalid refresh token',
+                    'data': None,
+                    'errors': {'detail': 'Invalid or expired refresh token'}
+                }, status=status.HTTP_401_UNAUTHORIZED)
+                
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error in token refresh: {error_message}")
+            return Response({
+                'message': 'Failed to refresh token',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
