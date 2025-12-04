@@ -188,7 +188,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'core.services.authentication.UUIDJWTAuthentication',
     ],
 }
 
@@ -217,8 +217,8 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),  # Access token expires in 1 hour
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),  # Refresh token expires in 30 days
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': False,

@@ -1,22 +1,77 @@
 """Views for Sanatan App API."""
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, permissions
+from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.settings import api_settings
+from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
-from .models import Shloka, ShlokaExplanation, User
+from .models import Shloka, ShlokaExplanation, User, ReadingLog, ReadingType, Favorite, ChatConversation, ChatMessage
 from .serializers import (
     ShlokaSerializer, 
     ExplanationSerializer, 
     SignupSerializer, 
     LoginSerializer,
-    UserSerializer
+    UserSerializer,
+    ReadingLogSerializer,
+    ReadingLogCreateSerializer,
+    FavoriteSerializer,
+    ChatConversationSerializer,
+    ChatMessageSerializer,
+    ChatMessageCreateSerializer
 )
+from core.services.authentication import UUIDJWTAuthentication
 from .services import ShlokaService
+from .services.stats_service import StatsService
+from .services.chatbot_service import ChatbotService
+from django.utils import timezone
+from datetime import timedelta
 import logging
+import uuid
+import json
 
 logger = logging.getLogger(__name__)
+
+
+def _format_shloka_response(result: dict, success_message: str = "Shloka retrieved successfully"):
+    """
+    Format shloka response in a consistent structure.
+    
+    This helper function ensures all shloka endpoints return the same format:
+    {
+        'message': str,
+        'data': {
+            'shloka': {...},
+            'summary': {...} or None,
+            'detailed': {...} or None,
+        },
+        'errors': None
+    }
+    
+    Args:
+        result: Dictionary from ShlokaService with keys 'shloka', 'summary', 'detailed'
+        success_message: Custom success message (default: "Shloka retrieved successfully")
+        
+    Returns:
+        Formatted response dictionary
+    """
+    # Serialize the data consistently
+    shloka_serializer = ShlokaSerializer(result['shloka'])
+    summary_serializer = ExplanationSerializer(result['summary']) if result.get('summary') else None
+    detailed_serializer = ExplanationSerializer(result['detailed']) if result.get('detailed') else None
+    
+    # Return consistent format
+    return {
+        'message': success_message,
+        'data': {
+            'shloka': shloka_serializer.data,
+            'summary': summary_serializer.data if summary_serializer else None,
+            'detailed': detailed_serializer.data if detailed_serializer else None,
+        },
+        'errors': None
+    }
 
 
 class RandomShlokaView(APIView):
@@ -25,9 +80,10 @@ class RandomShlokaView(APIView):
     
     API Path: GET /api/shlokas/random
     
-    If explanations don't exist, they will be generated on-demand using AI.
+    Explanations are pre-generated and fetched directly from the database.
     """
-    
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
     @extend_schema(
         responses={
             200: inline_serializer(
@@ -55,7 +111,7 @@ class RandomShlokaView(APIView):
                 }
             ),
         },
-        description="Get a random shloka with both summary and detailed explanations. If explanations don't exist, they will be generated on-demand.",
+        description="Get a random shloka with both summary and detailed explanations. Explanations are pre-generated and fetched from the database.",
         summary="Get random shloka",
         tags=["Shlokas"],
     )
@@ -64,25 +120,33 @@ class RandomShlokaView(APIView):
         Get a random shloka with both summary and detailed explanations.
         
         API Path: GET /api/shlokas/random
+        
+        Explanations are pre-generated and fetched directly from the database.
         """
         try:
             shloka_service = ShlokaService()
-            result = shloka_service.get_random_shloka()
+            # Pass user to filter out read shlokas
+            result = shloka_service.get_random_shloka(user=request.user)
             
-            # Serialize the data
-            shloka_serializer = ShlokaSerializer(result['shloka'])
-            summary_serializer = ExplanationSerializer(result['summary']) if result.get('summary') else None
-            detailed_serializer = ExplanationSerializer(result['detailed']) if result.get('detailed') else None
+            # Use helper function to ensure consistent format
+            response_data = _format_shloka_response(result, 'Random shloka retrieved successfully')
             
-            return Response({
-                'message': 'Random shloka retrieved successfully',
-                'data': {
-                    'shloka': shloka_serializer.data,
-                    'summary': summary_serializer.data if summary_serializer else None,
-                    'detailed': detailed_serializer.data if detailed_serializer else None,
-                },
-                'errors': None
-            }, status=status.HTTP_200_OK)
+            # Log the response data for debugging
+            response_json = json.dumps(response_data, indent=2, default=str)
+            logger.info("=" * 80)
+            logger.info("RANDOM SHLOKA RESPONSE:")
+            logger.info("=" * 80)
+            logger.info(response_json)
+            logger.info("=" * 80)
+            
+            # Also print to console for immediate visibility
+            print("\n" + "=" * 80)
+            print("RANDOM SHLOKA API RESPONSE:")
+            print("=" * 80)
+            print(response_json)
+            print("=" * 80 + "\n")
+            
+            return Response(response_data, status=status.HTTP_200_OK)
             
         except Exception as e:
             error_message = str(e)
@@ -108,9 +172,10 @@ class ShlokaDetailView(APIView):
     
     API Path: GET /api/shlokas/{shloka_id}
     
-    If explanations don't exist, they will be generated on-demand using AI.
+    Explanations are pre-generated and fetched directly from the database.
     """
-    
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
     @extend_schema(
         parameters=[
             OpenApiParameter(
@@ -147,7 +212,7 @@ class ShlokaDetailView(APIView):
                 }
             ),
         },
-        description="Get a specific shloka by ID with both summary and detailed explanations. If explanations don't exist, they will be generated on-demand.",
+        description="Get a specific shloka by ID with both summary and detailed explanations. Explanations are pre-generated and fetched from the database.",
         summary="Get shloka by ID",
         tags=["Shlokas"],
     )
@@ -156,25 +221,32 @@ class ShlokaDetailView(APIView):
         Get a specific shloka by ID with both summary and detailed explanations.
         
         API Path: GET /api/shlokas/{shloka_id}
+        
+        Explanations are pre-generated and fetched directly from the database.
         """
         try:
             shloka_service = ShlokaService()
             result = shloka_service.get_shloka_by_id(shloka_id)
             
-            # Serialize the data
-            shloka_serializer = ShlokaSerializer(result['shloka'])
-            summary_serializer = ExplanationSerializer(result['summary']) if result.get('summary') else None
-            detailed_serializer = ExplanationSerializer(result['detailed']) if result.get('detailed') else None
+            # Use helper function to ensure consistent format
+            response_data = _format_shloka_response(result, 'Shloka retrieved successfully')
             
-            return Response({
-                'message': 'Shloka retrieved successfully',
-                'data': {
-                    'shloka': shloka_serializer.data,
-                    'summary': summary_serializer.data if summary_serializer else None,
-                    'detailed': detailed_serializer.data if detailed_serializer else None,
-                },
-                'errors': None
-            }, status=status.HTTP_200_OK)
+            # Log the response data for debugging
+            response_json = json.dumps(response_data, indent=2, default=str)
+            logger.info("=" * 80)
+            logger.info(f"SHLOKA DETAIL RESPONSE (ID: {shloka_id}):")
+            logger.info("=" * 80)
+            logger.info(response_json)
+            logger.info("=" * 80)
+            
+            # Also print to console for immediate visibility
+            print("\n" + "=" * 80)
+            print(f"SHLOKA DETAIL API RESPONSE (ID: {shloka_id}):")
+            print("=" * 80)
+            print(response_json)
+            print("=" * 80 + "\n")
+            
+            return Response(response_data, status=status.HTTP_200_OK)
             
         except Exception as e:
             error_message = str(e)
@@ -200,7 +272,8 @@ class HealthCheckView(APIView):
     
     API Path: GET /health
     """
-    
+    permission_classes = [AllowAny]
+    authentication_classes = []
     @extend_schema(
         responses={
             200: inline_serializer(
@@ -237,7 +310,8 @@ class RootView(APIView):
     
     API Path: GET /
     """
-    
+    permission_classes = [AllowAny]
+    authentication_classes = []
     @extend_schema(
         responses={
             200: inline_serializer(
@@ -275,7 +349,8 @@ class SignupView(APIView):
     
     API Path: POST /api/auth/signup
     """
-    
+    permission_classes = [AllowAny]
+    authentication_classes = []
     @extend_schema(
         request=SignupSerializer,
         responses={
@@ -313,6 +388,19 @@ class SignupView(APIView):
                 
                 # Generate JWT tokens
                 refresh = RefreshToken.for_user(user)
+                access_token = refresh.access_token
+                
+                # Calculate token expiration times
+                access_token_expires_at = timezone.now() + api_settings.ACCESS_TOKEN_LIFETIME
+                refresh_token_expires_at = timezone.now() + api_settings.REFRESH_TOKEN_LIFETIME
+                
+                # Save tokens to user model
+                user.update_tokens(
+                    access_token=str(access_token),
+                    refresh_token=str(refresh),
+                    access_token_expires_at=access_token_expires_at,
+                    refresh_token_expires_at=refresh_token_expires_at
+                )
                 
                 # Serialize user data (without password)
                 user_serializer = UserSerializer(user)
@@ -322,7 +410,7 @@ class SignupView(APIView):
                     'data': {
                         'user': user_serializer.data,
                         'tokens': {
-                            'access': str(refresh.access_token),
+                            'access': str(access_token),
                             'refresh': str(refresh),
                         }
                     },
@@ -350,7 +438,8 @@ class LoginView(APIView):
     
     API Path: POST /api/auth/login
     """
-    
+    permission_classes = [AllowAny] 
+    authentication_classes = []
     @extend_schema(
         request=LoginSerializer,
         responses={
@@ -412,6 +501,19 @@ class LoginView(APIView):
             
             # Generate JWT tokens
             refresh = RefreshToken.for_user(user)
+            access_token = refresh.access_token
+            
+            # Calculate token expiration times
+            access_token_expires_at = timezone.now() + api_settings.ACCESS_TOKEN_LIFETIME
+            refresh_token_expires_at = timezone.now() + api_settings.REFRESH_TOKEN_LIFETIME
+            
+            # Save tokens to user model
+            user.update_tokens(
+                access_token=str(access_token),
+                refresh_token=str(refresh),
+                access_token_expires_at=access_token_expires_at,
+                refresh_token_expires_at=refresh_token_expires_at
+            )
             
             # Serialize user data (without password)
             user_serializer = UserSerializer(user)
@@ -421,7 +523,7 @@ class LoginView(APIView):
                 'data': {
                     'user': user_serializer.data,
                     'tokens': {
-                        'access': str(refresh.access_token),
+                        'access': str(access_token),
                         'refresh': str(refresh),
                     }
                 },
@@ -444,7 +546,8 @@ class TokenRefreshView(APIView):
     
     API Path: POST /api/auth/refresh
     """
-    
+    permission_classes = [AllowAny]
+    authentication_classes = []
     @extend_schema(
         request=inline_serializer(
             name='TokenRefreshRequest',
@@ -493,14 +596,72 @@ class TokenRefreshView(APIView):
                 refresh = RefreshToken(refresh_token)
                 access_token = refresh.access_token
                 
+                # Get user from token
+                user_id = refresh[api_settings.USER_ID_CLAIM]
+                try:
+                    user = User.objects.get(id=user_id)
+                except User.DoesNotExist:
+                    return Response({
+                        'message': 'User not found',
+                        'data': None,
+                        'errors': {'detail': 'User associated with token not found'}
+                    }, status=status.HTTP_401_UNAUTHORIZED)
+                
+                # Check if token rotation is enabled (refresh token is rotated)
+                new_refresh_token = None
+                if api_settings.ROTATE_REFRESH_TOKENS:
+                    # Blacklist the old refresh token (if blacklist app is available)
+                    try:
+                        refresh.blacklist()
+                    except (AttributeError, NotImplementedError):
+                        # Blacklist app not installed, skip blacklisting
+                        logger.warning("Token blacklist app not installed, skipping blacklist")
+                    except Exception as e:
+                        # Log but don't fail if blacklisting fails
+                        logger.warning(f"Failed to blacklist token: {str(e)}")
+                    # Generate new refresh token
+                    new_refresh = RefreshToken.for_user(user)
+                    new_refresh_token = str(new_refresh)
+                else:
+                    # Use the same refresh token
+                    new_refresh_token = str(refresh)
+                
+                # Extend refresh token expiry to 30 days from now (every time refresh is called)
+                refresh_token_expires_at = timezone.now() + api_settings.REFRESH_TOKEN_LIFETIME
+                
+                # Calculate access token expiration (1 hour from now)
+                access_token_expires_at = timezone.now() + api_settings.ACCESS_TOKEN_LIFETIME
+                
+                # Update tokens in user model
+                user.update_tokens(
+                    access_token=str(access_token),
+                    refresh_token=new_refresh_token,
+                    access_token_expires_at=access_token_expires_at,
+                    refresh_token_expires_at=refresh_token_expires_at
+                )
+                
+                response_data = {
+                    'access': str(access_token),
+                }
+                
+                # Include new refresh token if rotated
+                if new_refresh_token and api_settings.ROTATE_REFRESH_TOKENS:
+                    response_data['refresh'] = new_refresh_token
+                
                 return Response({
                     'message': 'Token refreshed successfully',
-                    'data': {
-                        'access': str(access_token),
-                    },
+                    'data': response_data,
                     'errors': None
                 }, status=status.HTTP_200_OK)
+            except (TokenError, InvalidToken) as e:
+                logger.error(f"Token validation error: {str(e)}")
+                return Response({
+                    'message': 'Invalid refresh token',
+                    'data': None,
+                    'errors': {'detail': f'Invalid or expired refresh token: {str(e)}'}
+                }, status=status.HTTP_401_UNAUTHORIZED)
             except Exception as e:
+                logger.error(f"Unexpected error in token refresh: {str(e)}")
                 return Response({
                     'message': 'Invalid refresh token',
                     'data': None,
@@ -514,4 +675,551 @@ class TokenRefreshView(APIView):
                 'message': 'Failed to refresh token',
                 'data': None,
                 'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserStatsView(APIView):
+    """
+    Get user statistics.
+    
+    API Path: GET /api/user/stats
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='UserStatsResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Get user statistics including level, experience, streak, and reading counts",
+        summary="Get user stats",
+        tags=["User"],
+    )
+    def get(self, request):
+        """
+        Get user statistics.
+        
+        API Path: GET /api/user/stats
+        """
+        try:
+            stats_service = StatsService()
+            stats = stats_service.get_user_stats(request.user)
+            
+            return Response({
+                'message': 'User statistics retrieved successfully',
+                'data': stats,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error getting user stats: {error_message}")
+            return Response({
+                'message': 'Failed to retrieve user statistics',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ReadingLogView(APIView):
+    """
+    Create a reading log entry.
+    
+    API Path: POST /api/reading-logs
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        request=ReadingLogCreateSerializer,
+        responses={
+            201: inline_serializer(
+                name='ReadingLogResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            404: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Log a reading of a shloka",
+        summary="Create reading log",
+        tags=["Reading Logs"],
+    )
+    def post(self, request):
+        """
+        Create a reading log entry.
+        
+        API Path: POST /api/reading-logs
+        """
+        try:
+            serializer = ReadingLogCreateSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response({
+                    'message': 'Validation error',
+                    'data': None,
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            shloka_id = serializer.validated_data['shloka_id']
+            reading_type = serializer.validated_data['reading_type']
+            
+            # Verify shloka exists
+            try:
+                shloka = Shloka.objects.get(id=shloka_id)
+            except Shloka.DoesNotExist:
+                return Response({
+                    'message': 'Shloka not found',
+                    'data': None,
+                    'errors': {'detail': f'Shloka with ID {shloka_id} not found'}
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Create reading log entry
+            reading_log = ReadingLog.objects.create(
+                user=request.user,
+                shloka=shloka,
+                reading_type=reading_type
+            )
+            
+            # Serialize the response
+            log_serializer = ReadingLogSerializer(reading_log)
+            
+            return Response({
+                'message': 'Reading log created successfully',
+                'data': log_serializer.data,
+                'errors': None
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error creating reading log: {error_message}")
+            return Response({
+                'message': 'Failed to create reading log',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class FavoriteView(APIView):
+    """
+    Manage user's favorite shlokas.
+    
+    API Path: GET /api/favorites - List all favorites
+    API Path: POST /api/favorites - Add a favorite (requires shloka_id in body)
+    API Path: DELETE /api/favorites?shloka_id=<uuid> - Remove a favorite
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='FavoriteListResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Get all favorite shlokas for the authenticated user",
+        summary="List favorites",
+        tags=["Favorites"],
+    )
+    def get(self, request):
+        """List all favorite shlokas for the authenticated user."""
+        try:
+            favorites = Favorite.objects.filter(user=request.user).order_by('-created_at')
+            serializer = FavoriteSerializer(favorites, many=True)
+            return Response({
+                'message': 'Favorites retrieved successfully',
+                'data': serializer.data,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error getting favorites: {str(e)}")
+            return Response({
+                'message': 'Failed to retrieve favorites',
+                'data': None,
+                'errors': {'detail': str(e)}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @extend_schema(
+        request=inline_serializer(
+            name='FavoriteCreateRequest',
+            fields={
+                'shloka_id': OpenApiTypes.UUID,
+            }
+        ),
+        responses={
+            201: inline_serializer(
+                name='FavoriteCreateResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            404: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Add a shloka to favorites",
+        summary="Add favorite",
+        tags=["Favorites"],
+    )
+    def post(self, request):
+        """Add a shloka to favorites."""
+        try:
+            shloka_id = request.data.get('shloka_id')
+            if not shloka_id:
+                return Response({
+                    'message': 'shloka_id is required',
+                    'data': None,
+                    'errors': {'detail': 'shloka_id is required'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                shloka = Shloka.objects.get(id=shloka_id)
+            except Shloka.DoesNotExist:
+                return Response({
+                    'message': 'Shloka not found',
+                    'data': None,
+                    'errors': {'detail': f'Shloka with ID {shloka_id} not found'}
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            favorite, created = Favorite.objects.get_or_create(user=request.user, shloka=shloka)
+            serializer = FavoriteSerializer(favorite)
+            
+            return Response({
+                'message': 'Favorite added successfully' if created else 'Shloka already in favorites',
+                'data': serializer.data,
+                'errors': None
+            }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error adding favorite: {str(e)}")
+            return Response({
+                'message': 'Failed to add favorite',
+                'data': None,
+                'errors': {'detail': str(e)}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name='shloka_id',
+                description='UUID of the shloka to remove from favorites',
+                required=True,
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name='FavoriteDeleteResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            404: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Remove a shloka from favorites using query parameter",
+        summary="Remove favorite",
+        tags=["Favorites"],
+    )
+    def delete(self, request):
+        """Remove a shloka from favorites using query parameter."""
+        try:
+            shloka_id = request.query_params.get('shloka_id')
+            if not shloka_id:
+                return Response({
+                    'message': 'shloka_id query parameter is required',
+                    'data': None,
+                    'errors': {'detail': 'shloka_id query parameter is required'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                # Validate UUID format
+                uuid.UUID(shloka_id)
+            except (ValueError, TypeError):
+                return Response({
+                    'message': 'Invalid shloka_id format',
+                    'data': None,
+                    'errors': {'detail': 'shloka_id must be a valid UUID'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            favorite = Favorite.objects.filter(user=request.user, shloka_id=shloka_id).first()
+            if not favorite:
+                return Response({
+                    'message': 'Favorite not found',
+                    'data': None,
+                    'errors': {'detail': 'Shloka is not in favorites'}
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            favorite.delete()
+            return Response({
+                'message': 'Favorite removed successfully',
+                'data': None,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error removing favorite: {str(e)}")
+            return Response({
+                'message': 'Failed to remove favorite',
+                'data': None,
+                'errors': {'detail': str(e)}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class MarkShlokaReadView(APIView):
+    """Mark a shloka as read or unmark it."""
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        request=inline_serializer(
+            name='MarkShlokaReadRequest',
+            fields={
+                'shloka_id': OpenApiTypes.UUID,
+                'marked': OpenApiTypes.BOOL,
+            }
+        ),
+        responses={
+            200: inline_serializer(
+                name='MarkShlokaReadResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            404: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Mark a shloka as read or unmark it",
+        summary="Mark shloka as read",
+        tags=["Shlokas"],
+    )
+    def post(self, request):
+        """Mark or unmark a shloka as read."""
+        try:
+            shloka_id = request.data.get('shloka_id')
+            marked = request.data.get('marked', True)  # Default to True (mark as read)
+            
+            if not shloka_id:
+                return Response({
+                        'message': 'shloka_id is required',
+                        'data': None,
+                        'errors': {'detail': 'shloka_id is required'}
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            
+            shloka_service = ShlokaService()
+            
+            if marked:
+                # Mark as read
+                read_status = shloka_service.mark_shloka_as_read(request.user, shloka_id)
+                return Response({
+                    'message': 'Shloka marked as read successfully',
+                    'data': {
+                        'shloka_id': str(shloka_id),
+                        'marked': True,
+                        'marked_at': read_status.marked_read_at.isoformat()
+                    },
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            else:
+                # Unmark as read
+                removed = shloka_service.unmark_shloka_as_read(request.user, shloka_id)
+                if removed:
+                    return Response({
+                        'message': 'Shloka unmarked successfully',
+                        'data': {
+                            'shloka_id': str(shloka_id),
+                            'marked': False
+                        },
+                        'errors': None
+                    }, status=status.HTTP_200_OK)
+                else:
+                    return Response({
+                        'message': 'Shloka was not marked as read',
+                        'data': None,
+                        'errors': {'detail': 'Shloka was not in read list'}
+                    }, status=status.HTTP_404_NOT_FOUND)
+                    
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error marking shloka as read: {error_message}")
+            
+            if "not found" in error_message.lower():
+                return Response({
+                        'message': 'Shloka not found',
+                    'data': None,
+                        'errors': {'detail': error_message}
+                    }, status=status.HTTP_404_NOT_FOUND)
+            
+            return Response({
+                'message': 'Failed to mark shloka as read',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ChatConversationListView(APIView):
+    """List user's chat conversations."""
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            conversations = ChatConversation.objects.filter(user=request.user).order_by('-updated_at')
+            serializer = ChatConversationSerializer(conversations, many=True)
+            return Response({
+                'message': 'Conversations retrieved successfully',
+                'data': serializer.data,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error getting conversations: {str(e)}")
+            return Response({
+                'message': 'Failed to retrieve conversations',
+                'data': None,
+                'errors': {'detail': str(e)}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ChatMessageView(APIView):
+    """Send a message and get AI response."""
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            serializer = ChatMessageCreateSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response({
+                    'message': 'Validation error',
+                    'data': None,
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            user_message = serializer.validated_data['message']
+            conversation_id = serializer.validated_data.get('conversation_id')
+            
+            chatbot_service = ChatbotService()
+            
+            # Get or create conversation
+            if conversation_id:
+                try:
+                    conversation = ChatConversation.objects.get(id=conversation_id, user=request.user)
+                except ChatConversation.DoesNotExist:
+                    return Response({
+                        'message': 'Conversation not found',
+                        'data': None,
+                        'errors': {'detail': 'Conversation not found'}
+                    }, status=status.HTTP_404_NOT_FOUND)
+            else:
+                # Create new conversation
+                conversation = chatbot_service.create_conversation(request.user)
+            
+            # Add user message
+            chatbot_service.add_message(conversation, 'user', user_message)
+            
+            # Get conversation history
+            history = chatbot_service.get_conversation_messages(conversation)
+            
+            # Generate AI response
+            ai_response = chatbot_service.generate_response(
+                user_message,
+                history[:-1],  # Exclude the current message
+                request.user
+            )
+            
+            # Add AI response
+            chatbot_service.add_message(conversation, 'assistant', ai_response)
+            
+            # Get updated conversation
+            conversation_serializer = ChatConversationSerializer(conversation)
+            
+            return Response({
+                'message': 'Message sent successfully',
+                'data': {
+                    'conversation': conversation_serializer.data,
+                    'response': ai_response
+                },
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error in chat message: {str(e)}")
+            return Response({
+                'message': 'Failed to process message',
+                'data': None,
+                'errors': {'detail': str(e)}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

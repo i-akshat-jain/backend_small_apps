@@ -144,15 +144,27 @@ class ShlokaService:
             }
             
             # Generate explanation
-            explanation_text, prompt = self.groq_service.generate_explanation(
+            # generate_explanation returns (explanation_text, prompt, structured_data)
+            explanation_text, prompt, structured_data = self.groq_service.generate_explanation(
                 shloka_dict, explanation_type
             )
+            
+            # Save word_by_word to Shloka model if present
+            # Word-by-word is stored only in the Shloka model, not in explanations
+            word_by_word = structured_data.get('word_by_word') if structured_data else None
+            if word_by_word:
+                shloka.word_by_word = word_by_word
+                shloka.save(update_fields=['word_by_word', 'updated_at'])
+            
+            # Remove WORD-BY-WORD section from explanation_text before saving
+            # Word-by-word is stored only in the Shloka model, not in explanations
+            explanation_text_cleaned = self._remove_word_by_word_section(explanation_text)
             
             # Create new explanation
             explanation = ShlokaExplanation.objects.create(
                 shloka=shloka,
                 explanation_type=explanation_type,
-                explanation_text=explanation_text,
+                explanation_text=explanation_text_cleaned,
                 ai_model_used=self.groq_service.model,
                 generation_prompt=prompt,
             )
@@ -162,4 +174,83 @@ class ShlokaService:
         except Exception as e:
             logger.error(f"Error generating and storing explanation: {str(e)}")
             raise
+    
+    def _remove_word_by_word_section(self, explanation_text):
+        """
+        Remove the WORD-BY-WORD section from explanation text.
+        
+        Word-by-word breakdown is stored only in the Shloka model, not in explanations.
+        This method removes the WORD-BY-WORD section from the explanation text before saving.
+        
+        Args:
+            explanation_text: The full explanation text that may contain WORD-BY-WORD section
+            
+        Returns:
+            Explanation text with WORD-BY-WORD section removed
+        """
+        if not explanation_text:
+            return explanation_text
+        
+        import re
+        
+        # Use the same section extraction logic as groq_service to find and remove WORD-BY-WORD section
+        lines = explanation_text.split('\n')
+        cleaned_lines = []
+        skip_until_next_section = False
+        
+        for line in lines:
+            # Check if this line starts a WORD-BY-WORD section
+            # Match patterns like "2. WORD-BY-WORD:", "WORD-BY-WORD:", "2. WORD-BY-WORD / STATEMENT-BY-STATEMENT BREAKDOWN:", etc.
+            line_upper = line.upper().strip()
+            is_word_by_word_header = (
+                re.match(r'^\d+\.\s*WORD[-‑\s]*BY[-‑\s]*WORD', line_upper) or
+                re.match(r'^WORD[-‑\s]*BY[-‑\s]*WORD', line_upper) or
+                'WORD-BY-WORD' in line_upper or
+                'WORD BY WORD' in line_upper or
+                'STATEMENT-BY-STATEMENT' in line_upper
+            )
+            
+            if is_word_by_word_header:
+                # Start of WORD-BY-WORD section - skip it and all following lines until next section
+                skip_until_next_section = True
+                continue
+            
+            # If we're skipping (in WORD-BY-WORD section), check if we've reached the next section
+            if skip_until_next_section:
+                # Check if this is a new section header (starts with number and colon, or just uppercase text with colon)
+                # But make sure it's not another WORD-BY-WORD variant
+                line_upper_check = line.upper().strip()
+                is_another_word_by_word = (
+                    'WORD-BY-WORD' in line_upper_check or
+                    'WORD BY WORD' in line_upper_check or
+                    'STATEMENT-BY-STATEMENT' in line_upper_check
+                )
+                
+                if not is_another_word_by_word:
+                    # Check if this looks like a section header
+                    is_new_section = (
+                        re.match(r'^\d+\.\s+[A-Z][A-Z\s/-—\-‑]+:', line) or
+                        re.match(r'^[A-Z][A-Z\s/-—\-‑]+:', line)
+                    )
+                    if is_new_section:
+                        # We've reached the next section, stop skipping and include this line
+                        skip_until_next_section = False
+                        cleaned_lines.append(line)
+                # Otherwise, continue skipping lines in the WORD-BY-WORD section
+                continue
+            
+            # Not in WORD-BY-WORD section, keep the line
+            cleaned_lines.append(line)
+        
+        # Join lines back together
+        cleaned_text = '\n'.join(cleaned_lines)
+        
+        # Clean up any double newlines that might have been created
+        cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)
+        
+        # Remove trailing whitespace from each line
+        cleaned_lines_final = [line.rstrip() for line in cleaned_text.split('\n')]
+        cleaned_text = '\n'.join(cleaned_lines_final)
+        
+        return cleaned_text.strip()
 

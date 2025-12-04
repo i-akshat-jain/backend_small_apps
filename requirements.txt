@@ -17,3 +17,6 @@ groq==0.11.0
 
 # HTTP client (if needed)
 httpx==0.27.2
+
+# PDF processing
+pypdf==4.0.1
