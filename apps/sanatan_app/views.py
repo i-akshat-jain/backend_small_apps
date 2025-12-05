@@ -8,7 +8,7 @@ from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
-from .models import Shloka, ShlokaExplanation, User, ReadingLog, ReadingType, Favorite, ChatConversation, ChatMessage
+from .models import Shloka, ShlokaExplanation, User, ReadingLog, ReadingType, Favorite, ChatConversation, ChatMessage, ShlokaReadStatus
 from .serializers import (
     ShlokaSerializer, 
     ExplanationSerializer, 
@@ -20,10 +20,11 @@ from .serializers import (
     FavoriteSerializer,
     ChatConversationSerializer,
     ChatMessageSerializer,
-    ChatMessageCreateSerializer
+    ChatMessageCreateSerializer,
+    UserStreakSerializer
 )
 from core.services.authentication import UUIDJWTAuthentication
-from .services import ShlokaService
+from .services.shloka_service import ShlokaService
 from .services.stats_service import StatsService
 from .services.chatbot_service import ChatbotService
 from django.utils import timezone
@@ -44,14 +45,13 @@ def _format_shloka_response(result: dict, success_message: str = "Shloka retriev
         'message': str,
         'data': {
             'shloka': {...},
-            'summary': {...} or None,
-            'detailed': {...} or None,
+            'explanation': {...} or None,
         },
         'errors': None
     }
     
     Args:
-        result: Dictionary from ShlokaService with keys 'shloka', 'summary', 'detailed'
+        result: Dictionary from ShlokaService with keys 'shloka', 'explanation'
         success_message: Custom success message (default: "Shloka retrieved successfully")
         
     Returns:
@@ -59,16 +59,14 @@ def _format_shloka_response(result: dict, success_message: str = "Shloka retriev
     """
     # Serialize the data consistently
     shloka_serializer = ShlokaSerializer(result['shloka'])
-    summary_serializer = ExplanationSerializer(result['summary']) if result.get('summary') else None
-    detailed_serializer = ExplanationSerializer(result['detailed']) if result.get('detailed') else None
+    explanation_serializer = ExplanationSerializer(result['explanation']) if result.get('explanation') else None
     
     # Return consistent format
     return {
         'message': success_message,
         'data': {
             'shloka': shloka_serializer.data,
-            'summary': summary_serializer.data if summary_serializer else None,
-            'detailed': detailed_serializer.data if detailed_serializer else None,
+            'explanation': explanation_serializer.data if explanation_serializer else None,
         },
         'errors': None
     }
@@ -76,7 +74,7 @@ def _format_shloka_response(result: dict, success_message: str = "Shloka retriev
 
 class RandomShlokaView(APIView):
     """
-    Get a random shloka with both summary and detailed explanations.
+    Get a random shloka with explanation.
     
     API Path: GET /api/shlokas/random
     
@@ -111,46 +109,49 @@ class RandomShlokaView(APIView):
                 }
             ),
         },
-        description="Get a random shloka with both summary and detailed explanations. Explanations are pre-generated and fetched from the database.",
+        description="Get a random shloka with explanation. Explanations are pre-generated and fetched from the database.",
         summary="Get random shloka",
         tags=["Shlokas"],
     )
     def get(self, request):
         """
-        Get a random shloka with both summary and detailed explanations.
+        Get a random shloka with explanation.
         
         API Path: GET /api/shlokas/random
         
+        Returns a random shloka from all available shlokas in the database.
         Explanations are pre-generated and fetched directly from the database.
+        No AI calls are made - this endpoint only queries existing data.
         """
         try:
-            shloka_service = ShlokaService()
-            # Pass user to filter out read shlokas
-            result = shloka_service.get_random_shloka(user=request.user)
+            # Get a random shloka from all available shlokas
+            shloka = Shloka.objects.order_by('?').first()
             
-            # Use helper function to ensure consistent format
+            if shloka is None:
+                return Response({
+                    'message': 'No shlokas found',
+                    'data': None,
+                    'errors': {'detail': 'No shlokas available in the database'}
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Get explanation directly from database (pre-generated)
+            # There's only one explanation per shloka now
+            explanation = ShlokaExplanation.objects.filter(
+                shloka_id=shloka.id
+            ).first()
+            
+            # Format response using helper function
+            result = {
+                'shloka': shloka,
+                'explanation': explanation,
+            }
             response_data = _format_shloka_response(result, 'Random shloka retrieved successfully')
-            
-            # Log the response data for debugging
-            response_json = json.dumps(response_data, indent=2, default=str)
-            logger.info("=" * 80)
-            logger.info("RANDOM SHLOKA RESPONSE:")
-            logger.info("=" * 80)
-            logger.info(response_json)
-            logger.info("=" * 80)
-            
-            # Also print to console for immediate visibility
-            print("\n" + "=" * 80)
-            print("RANDOM SHLOKA API RESPONSE:")
-            print("=" * 80)
-            print(response_json)
-            print("=" * 80 + "\n")
             
             return Response(response_data, status=status.HTTP_200_OK)
             
         except Exception as e:
             error_message = str(e)
-            logger.error(f"Error in get_random_shloka: {error_message}")
+            logger.error(f"Error in RandomShlokaView: {error_message}")
             
             if "not found" in error_message.lower() or "no shlokas" in error_message.lower():
                 return Response({
@@ -168,7 +169,7 @@ class RandomShlokaView(APIView):
 
 class ShlokaDetailView(APIView):
     """
-    Get a specific shloka by ID with both summary and detailed explanations.
+    Get a specific shloka by ID with explanation.
     
     API Path: GET /api/shlokas/{shloka_id}
     
@@ -212,13 +213,13 @@ class ShlokaDetailView(APIView):
                 }
             ),
         },
-        description="Get a specific shloka by ID with both summary and detailed explanations. Explanations are pre-generated and fetched from the database.",
+        description="Get a specific shloka by ID with explanation. Explanations are pre-generated and fetched from the database.",
         summary="Get shloka by ID",
         tags=["Shlokas"],
     )
     def get(self, request, shloka_id):
         """
-        Get a specific shloka by ID with both summary and detailed explanations.
+        Get a specific shloka by ID with explanation.
         
         API Path: GET /api/shlokas/{shloka_id}
         
@@ -233,18 +234,6 @@ class ShlokaDetailView(APIView):
             
             # Log the response data for debugging
             response_json = json.dumps(response_data, indent=2, default=str)
-            logger.info("=" * 80)
-            logger.info(f"SHLOKA DETAIL RESPONSE (ID: {shloka_id}):")
-            logger.info("=" * 80)
-            logger.info(response_json)
-            logger.info("=" * 80)
-            
-            # Also print to console for immediate visibility
-            print("\n" + "=" * 80)
-            print(f"SHLOKA DETAIL API RESPONSE (ID: {shloka_id}):")
-            print("=" * 80)
-            print(response_json)
-            print("=" * 80 + "\n")
             
             return Response(response_data, status=status.HTTP_200_OK)
             
@@ -709,8 +698,7 @@ class UserStatsView(APIView):
         API Path: GET /api/user/stats
         """
         try:
-            stats_service = StatsService()
-            stats = stats_service.get_user_stats(request.user)
+            stats = StatsService.get_user_stats(request.user)
             
             return Response({
                 'message': 'User statistics retrieved successfully',
@@ -723,6 +711,211 @@ class UserStatsView(APIView):
             logger.error(f"Error getting user stats: {error_message}")
             return Response({
                 'message': 'Failed to retrieve user statistics',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserStreakView(APIView):
+    """
+    Get user streak information.
+    
+    API Path: GET /api/user/streak
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='UserStreakResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Get user streak information including current streak, longest streak, and freeze status",
+        summary="Get user streak",
+        tags=["User"],
+    )
+    def get(self, request):
+        """
+        Get user streak information.
+        
+        API Path: GET /api/user/streak
+        """
+        try:
+            from .models import UserStreak
+            streak_data, created = UserStreak.objects.get_or_create(user=request.user)
+            
+            # Update streak calculation
+            StatsService.calculate_streak(request.user, update_streak_data=True)
+            
+            # Refresh from DB
+            streak_data.refresh_from_db()
+            
+            serializer = UserStreakSerializer(streak_data)
+            
+            return Response({
+                'message': 'User streak retrieved successfully',
+                'data': serializer.data,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error getting user streak: {error_message}")
+            return Response({
+                'message': 'Failed to retrieve user streak',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserStreakFreezeView(APIView):
+    """
+    Use streak freeze to prevent streak from breaking.
+    
+    API Path: POST /api/user/streak/freeze
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='StreakFreezeResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Use streak freeze to protect your streak from breaking (1 per month)",
+        summary="Use streak freeze",
+        tags=["User"],
+    )
+    def post(self, request):
+        """
+        Use streak freeze to prevent streak from breaking.
+        
+        API Path: POST /api/user/streak/freeze
+        """
+        try:
+            result = StatsService.use_streak_freeze(request.user)
+            
+            if result['success']:
+                return Response({
+                    'message': result['message'],
+                    'data': {
+                        'freeze_used': True,
+                        'freeze_available': result['freeze_available'],
+                        'current_streak': result.get('current_streak', 0)
+                    },
+                    'errors': None
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'message': result['message'],
+                    'data': {
+                        'freeze_used': False,
+                        'freeze_available': result.get('freeze_available', False)
+                    },
+                    'errors': {'detail': result['message']}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error using streak freeze: {error_message}")
+            return Response({
+                'message': 'Failed to use streak freeze',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserStreakHistoryView(APIView):
+    """
+    Get user streak history and milestones.
+    
+    API Path: GET /api/user/streak/history
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='StreakHistoryResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Get user streak history including milestones reached",
+        summary="Get streak history",
+        tags=["User"],
+    )
+    def get(self, request):
+        """
+        Get user streak history and milestones.
+        
+        API Path: GET /api/user/streak/history
+        """
+        try:
+            from .models import UserStreak
+            streak_data, created = UserStreak.objects.get_or_create(user=request.user)
+            
+            # Check for milestones
+            milestones = StatsService.check_streak_milestones(request.user)
+            
+            # Get recent reading dates for streak visualization
+            from django.db.models import Count
+            from django.utils import timezone
+            from datetime import timedelta
+            
+            # Get last 30 days of reading activity
+            thirty_days_ago = timezone.now() - timedelta(days=30)
+            recent_readings = ShlokaReadStatus.objects.filter(
+                user=request.user,
+                marked_read_at__gte=thirty_days_ago
+            ).extra(
+                select={'date': 'DATE(marked_read_at)'}
+            ).values('date').annotate(
+                count=Count('id')
+            ).order_by('-date')
+            
+            return Response({
+                'message': 'Streak history retrieved successfully',
+                'data': {
+                    'current_streak': streak_data.current_streak,
+                    'longest_streak': streak_data.longest_streak,
+                    'total_streak_days': streak_data.total_streak_days,
+                    'last_streak_date': streak_data.last_streak_date.isoformat() if streak_data.last_streak_date else None,
+                    'milestones_reached': milestones,
+                    'recent_activity': list(recent_readings)
+                },
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error getting streak history: {error_message}")
+            return Response({
+                'message': 'Failed to retrieve streak history',
                 'data': None,
                 'errors': {'detail': error_message}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1085,6 +1278,11 @@ class MarkShlokaReadView(APIView):
             if marked:
                 # Mark as read
                 read_status = shloka_service.mark_shloka_as_read(request.user, shloka_id)
+                
+                # Update streak after marking as read
+                from .services.stats_service import StatsService
+                StatsService.calculate_streak(request.user, update_streak_data=True)
+                
                 return Response({
                     'message': 'Shloka marked as read successfully',
                     'data': {
@@ -1098,6 +1296,10 @@ class MarkShlokaReadView(APIView):
                 # Unmark as read
                 removed = shloka_service.unmark_shloka_as_read(request.user, shloka_id)
                 if removed:
+                    # Update streak after unmarking as read
+                    from .services.stats_service import StatsService
+                    StatsService.calculate_streak(request.user, update_streak_data=True)
+                    
                     return Response({
                         'message': 'Shloka unmarked successfully',
                         'data': {

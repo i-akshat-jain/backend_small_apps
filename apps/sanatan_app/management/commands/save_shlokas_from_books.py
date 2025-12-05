@@ -59,6 +59,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Skip generating explanations (only extract shlokas)',
         )
+        parser.add_argument(
+            '--create-explanations-for-existing',
+            action='store_true',
+            help='Create explanations for existing shlokas that don\'t have them',
+        )
 
     def handle(self, *args, **options):
         """Extract and save shlokas from PDF books."""
@@ -69,6 +74,7 @@ class Command(BaseCommand):
         dry_run = options['dry_run']
         verbose = options['verbose']
         skip_explanations = options['skip_explanations']
+        create_explanations_for_existing = options.get('create_explanations_for_existing', False)
 
         self.stdout.write("=" * 70)
         self.stdout.write(self.style.SUCCESS("Extracting Shlokas from PDF Books"))
@@ -145,6 +151,7 @@ class Command(BaseCommand):
                     dry_run=dry_run,
                     verbose=verbose,
                     skip_explanations=skip_explanations,
+                    create_explanations_for_existing=create_explanations_for_existing,
                 )
 
                 chapter_stats[chapter_num] = {
@@ -242,6 +249,7 @@ class Command(BaseCommand):
         dry_run,
         verbose=False,
         skip_explanations=False,
+        create_explanations_for_existing=False,
     ):
         """Process a single chapter and extract shlokas."""
         added = 0
@@ -778,8 +786,25 @@ class Command(BaseCommand):
                             skipped += 1
                             self.stdout.write(
                                 f"    Shloka {idx}: Chapter {chapter_num_extracted}, "
-                                f"Verse {verse_num} - Already exists, skipping"
+                                f"Verse {verse_num} - Already exists"
                             )
+                            
+                            # Create explanation for existing shloka if it doesn't have one
+                            if not dry_run and not skip_explanations and create_explanations_for_existing:
+                                from apps.sanatan_app.models import ShlokaExplanation
+                                has_explanation = ShlokaExplanation.objects.filter(shloka=shloka).exists()
+                                if not has_explanation:
+                                    if verbose:
+                                        self.stdout.write(
+                                            f"      Creating explanation for existing shloka..."
+                                        )
+                                    self._generate_explanations_for_shloka(
+                                        shloka_service, shloka, verbose
+                                    )
+                                elif verbose:
+                                    self.stdout.write(
+                                        f"      Shloka already has explanation, skipping"
+                                    )
                 else:
                     # Dry run - just validate
                     added += 1
@@ -799,46 +824,84 @@ class Command(BaseCommand):
                 )
                 logger.exception(e)
 
+        # After processing all shlokas, create explanations for existing shlokas if requested
+        if not dry_run and not skip_explanations and create_explanations_for_existing:
+            from apps.sanatan_app.models import ShlokaExplanation
+            self.stdout.write("  Creating explanations for existing shlokas without explanations...")
+            existing_shlokas_in_chapter = Shloka.objects.filter(
+                book_name=book_name,
+                chapter_number=chapter_num
+            )
+            explanations_created = 0
+            for existing_shloka in existing_shlokas_in_chapter:
+                has_explanation = ShlokaExplanation.objects.filter(shloka=existing_shloka).exists()
+                if not has_explanation:
+                    try:
+                        if verbose:
+                            self.stdout.write(
+                                f"    Creating explanation for Chapter {chapter_num}, "
+                                f"Verse {existing_shloka.verse_number}..."
+                            )
+                        self._generate_explanations_for_shloka(
+                            shloka_service, existing_shloka, verbose
+                        )
+                        explanations_created += 1
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to create explanation for existing shloka "
+                            f"{existing_shloka.id}: {str(e)}"
+                        )
+                        if verbose:
+                            self.stdout.write(
+                                self.style.WARNING(
+                                    f"      ⚠ Failed to create explanation: {str(e)}"
+                                )
+                            )
+            if explanations_created > 0:
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"  ✓ Created {explanations_created} explanation(s) for existing shlokas"
+                    )
+                )
+
         return added, skipped, errors
 
     def _generate_explanations_for_shloka(self, shloka_service, shloka, verbose=False):
         """
-        Generate and save both summary and detailed explanations for a shloka.
+        Generate and save structured explanation for a shloka.
         
         This ensures all shlokas have consistent explanations generated at extraction time.
         Verifies that all explanation fields are properly saved.
         """
-        from apps.sanatan_app.models import ReadingType
-        
         explanations_generated = 0
         explanations_failed = 0
         
-        # Generate summary explanation
+        # Generate structured explanation (single explanation per shloka now)
         try:
             if verbose:
                 self.stdout.write(
-                    f"      Generating summary explanation for Chapter {shloka.chapter_number}, "
+                    f"      Generating explanation for Chapter {shloka.chapter_number}, "
                     f"Verse {shloka.verse_number}..."
                 )
             
-            summary = shloka_service.generate_and_store_explanation(shloka, ReadingType.SUMMARY)
-            if summary:
+            explanation = shloka_service.generate_and_store_explanation(shloka)
+            if explanation:
                 explanations_generated += 1
                 # Verify all fields are saved
-                fields_status = self._verify_explanation_fields(summary, ReadingType.SUMMARY)
+                fields_status = self._verify_explanation_fields(explanation)
                 if verbose:
                     self.stdout.write(
                         self.style.SUCCESS(
-                            f"      ✓ Summary explanation generated (ID: {summary.id})"
+                            f"      ✓ Explanation generated (ID: {explanation.id})"
                         )
                     )
-                    self._log_explanation_fields(summary, ReadingType.SUMMARY, fields_status)
+                    self._log_explanation_fields(explanation, fields_status)
                 elif not all(fields_status.values()):
                     # Log warning if some fields are missing even in non-verbose mode
                     missing_fields = [field for field, present in fields_status.items() if not present]
                     self.stdout.write(
                         self.style.WARNING(
-                            f"      ⚠ Summary explanation missing fields: {', '.join(missing_fields)}"
+                            f"      ⚠ Explanation missing fields: {', '.join(missing_fields)}"
                         )
                     )
             else:
@@ -846,80 +909,32 @@ class Command(BaseCommand):
                 if verbose:
                     self.stdout.write(
                         self.style.WARNING(
-                            f"      ⚠ Summary explanation generation returned None"
+                            f"      ⚠ Explanation generation returned None"
                         )
                     )
         except Exception as e:
             explanations_failed += 1
             logger.warning(
-                f"Failed to generate summary explanation for shloka {shloka.id}: {str(e)}"
+                f"Failed to generate explanation for shloka {shloka.id}: {str(e)}"
             )
             if verbose:
                 self.stdout.write(
                     self.style.WARNING(
-                        f"      ⚠ Failed to generate summary explanation: {str(e)}"
-                    )
-                )
-        
-        # Generate detailed explanation
-        try:
-            if verbose:
-                self.stdout.write(
-                    f"      Generating detailed explanation for Chapter {shloka.chapter_number}, "
-                    f"Verse {shloka.verse_number}..."
-                )
-            
-            detailed = shloka_service.generate_and_store_explanation(shloka, ReadingType.DETAILED)
-            if detailed:
-                explanations_generated += 1
-                # Verify all fields are saved
-                fields_status = self._verify_explanation_fields(detailed, ReadingType.DETAILED)
-                if verbose:
-                    self.stdout.write(
-                        self.style.SUCCESS(
-                            f"      ✓ Detailed explanation generated (ID: {detailed.id})"
-                        )
-                    )
-                    self._log_explanation_fields(detailed, ReadingType.DETAILED, fields_status)
-                elif not all(fields_status.values()):
-                    # Log warning if some fields are missing even in non-verbose mode
-                    missing_fields = [field for field, present in fields_status.items() if not present]
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"      ⚠ Detailed explanation missing fields: {', '.join(missing_fields)}"
-                        )
-                    )
-            else:
-                explanations_failed += 1
-                if verbose:
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"      ⚠ Detailed explanation generation returned None"
-                        )
-                    )
-        except Exception as e:
-            explanations_failed += 1
-            logger.warning(
-                f"Failed to generate detailed explanation for shloka {shloka.id}: {str(e)}"
-            )
-            if verbose:
-                self.stdout.write(
-                    self.style.WARNING(
-                        f"      ⚠ Failed to generate detailed explanation: {str(e)}"
+                        f"      ⚠ Failed to generate explanation: {str(e)}"
                     )
                 )
         
         if not verbose and explanations_generated > 0:
             self.stdout.write(
-                f"      ✓ Generated {explanations_generated} explanation(s) for shloka"
+                f"      ✓ Generated explanation for shloka"
             )
         
         if explanations_failed > 0:
             logger.warning(
-                f"Failed to generate {explanations_failed} explanation(s) for shloka {shloka.id}"
+                f"Failed to generate explanation for shloka {shloka.id}"
             )
     
-    def _verify_explanation_fields(self, explanation, explanation_type):
+    def _verify_explanation_fields(self, explanation):
         """
         Verify that all expected fields are present in the explanation.
         
@@ -928,18 +943,20 @@ class Command(BaseCommand):
         We check it separately and don't include it in explanation fields verification.
         """
         fields_status = {
-            'explanation_text': bool(explanation.explanation_text),
-            'ai_model_used': bool(explanation.ai_model_used),
-            'generation_prompt': bool(explanation.generation_prompt),
-            'why_this_matters': bool(explanation.why_this_matters),
+            'summary': bool(explanation.summary),
+            'detailed_meaning': bool(explanation.detailed_meaning),
+            'detailed_explanation': bool(explanation.detailed_explanation),
             'context': bool(explanation.context),
+            'why_this_matters': bool(explanation.why_this_matters),
             'modern_examples': bool(explanation.modern_examples),
             'themes': bool(explanation.themes),
             'reflection_prompt': bool(explanation.reflection_prompt),
+            'ai_model_used': bool(explanation.ai_model_used),
+            'generation_prompt': bool(explanation.generation_prompt),
         }
         return fields_status
     
-    def _log_explanation_fields(self, explanation, explanation_type, fields_status):
+    def _log_explanation_fields(self, explanation, fields_status):
         """Log the status of all explanation fields."""
         self.stdout.write(f"        Explanation fields status:")
         for field, present in fields_status.items():

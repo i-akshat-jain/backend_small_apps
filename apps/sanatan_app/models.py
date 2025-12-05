@@ -42,37 +42,139 @@ class Shloka(TimestampedModel):
 
 
 class ShlokaExplanation(TimestampedModel):
-    """Shloka explanation model."""
+    """
+    Shloka explanation model with structured fields.
+    
+    Single explanation per shloka (no summary/detailed distinction).
+    All content stored in structured fields for easy querying and filtering.
+    Full explanation text is generated on-demand via explanation_text property.
+    """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     shloka = models.ForeignKey(
         Shloka,
         on_delete=models.CASCADE,
         related_name='explanations'
     )
-    explanation_type = models.CharField(
-        max_length=20,
-        choices=ReadingType.choices
+    
+    # Structured fields (source of truth)
+    summary = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Brief overview of the shloka"
     )
-    explanation_text = models.TextField()
+    detailed_meaning = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Core meaning and philosophical significance"
+    )
+    detailed_explanation = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Deeper understanding and interpretation"
+    )
+    context = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Context of when/why it was said, context in the dialogue/story"
+    )
+    why_this_matters = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Modern relevance and practical importance"
+    )
+    modern_examples = models.JSONField(
+        blank=True, 
+        null=True, 
+        help_text="Modern applications as JSON array of {category, description}"
+    )
+    themes = models.JSONField(
+        blank=True, 
+        null=True, 
+        help_text="Key themes/tags as JSON array of strings"
+    )
+    reflection_prompt = models.TextField(
+        blank=True, 
+        null=True, 
+        help_text="Question for contemplation"
+    )
+    
+    # Quality tracking
+    quality_score = models.IntegerField(
+        default=0,
+        help_text="Overall quality score (0-100)"
+    )
+    quality_checked_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Timestamp of last quality check"
+    )
+    improvement_version = models.IntegerField(
+        default=0,
+        help_text="Number of improvement iterations performed"
+    )
+    
+    # Metadata
     ai_model_used = models.TextField(blank=True, null=True)
     generation_prompt = models.TextField(blank=True, null=True)
-    
-    # New structured fields for enhanced UI
-    why_this_matters = models.TextField(blank=True, null=True, help_text="Modern relevance explanation")
-    context = models.TextField(blank=True, null=True, help_text="Context in the dialogue/story")
-    modern_examples = models.JSONField(blank=True, null=True, help_text="Modern applications as JSON array")
-    themes = models.JSONField(blank=True, null=True, help_text="Key themes as JSON array of strings")
-    reflection_prompt = models.TextField(blank=True, null=True, help_text="Question for contemplation")
 
     class Meta:
         db_table = 'shloka_explanations'
-        unique_together = [['shloka', 'explanation_type']]
+        unique_together = [['shloka']]  # Only one explanation per shloka now
         indexes = [
-            models.Index(fields=['shloka', 'explanation_type']),
+            models.Index(fields=['shloka']),
+            models.Index(fields=['quality_score']),
+            models.Index(fields=['quality_checked_at']),
         ]
 
+    def get_explanation_text(self):
+        """
+        Generate full explanation text from structured fields.
+        This method provides the full explanation text for display/export purposes.
+        """
+        sections = []
+        
+        if self.summary:
+            sections.append(f"SUMMARY:\n{self.summary}")
+        
+        if self.detailed_meaning:
+            sections.append(f"DETAILED MEANING:\n{self.detailed_meaning}")
+        
+        if self.detailed_explanation:
+            sections.append(f"DETAILED EXPLANATION:\n{self.detailed_explanation}")
+        
+        if self.context:
+            sections.append(f"CONTEXT:\n{self.context}")
+        
+        if self.why_this_matters:
+            sections.append(f"WHY THIS MATTERS:\n{self.why_this_matters}")
+        
+        if self.modern_examples:
+            sections.append("MODERN EXAMPLES:")
+            for example in self.modern_examples:
+                if isinstance(example, dict):
+                    category = example.get('category', 'Example')
+                    description = example.get('description', '')
+                    sections.append(f"- {category}: {description}")
+                else:
+                    sections.append(f"- {example}")
+        
+        if self.themes:
+            themes_str = ', '.join(self.themes) if isinstance(self.themes, list) else str(self.themes)
+            sections.append(f"KEY THEMES: {themes_str}")
+        
+        if self.reflection_prompt:
+            sections.append(f"REFLECTION PROMPT:\n{self.reflection_prompt}")
+        
+        return "\n\n".join(sections) if sections else ""
+    
+    # Property for backward compatibility (accesses method)
+    @property
+    def explanation_text(self):
+        """Property accessor for explanation text (backward compatibility)."""
+        return self.get_explanation_text()
+
     def __str__(self):
-        return f"{self.shloka} - {self.get_explanation_type_display()}"
+        return f"{self.shloka} - Explanation"
 
 
 class User(TimestampedModel):
@@ -128,6 +230,62 @@ class User(TimestampedModel):
 
     def __str__(self):
         return self.email
+
+
+class UserStreak(TimestampedModel):
+    """Model to track user's reading streak and streak-related data."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='streak_data',
+        db_index=True
+    )
+    current_streak = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Current consecutive days streak"
+    )
+    longest_streak = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="All-time best streak"
+    )
+    streak_freeze_used_this_month = models.BooleanField(
+        default=False,
+        help_text="Whether streak freeze has been used this month"
+    )
+    last_streak_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Last date when streak was maintained"
+    )
+    total_streak_days = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Lifetime total days with streaks"
+    )
+    streak_freeze_reset_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date when streak freeze will reset (first day of next month)"
+    )
+    awarded_milestones = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of streak milestone days that have been awarded (e.g., [7, 30, 100, 365])"
+    )
+
+    class Meta:
+        db_table = 'user_streaks'
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['current_streak']),
+            models.Index(fields=['longest_streak']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} - Streak: {self.current_streak} days (Best: {self.longest_streak})"
 
 
 class ReadingLog(models.Model):

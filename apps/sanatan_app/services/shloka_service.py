@@ -27,7 +27,7 @@ class ShlokaService:
     
     def get_random_shloka(self, user=None):
         """
-        Get a random shloka with both summary and detailed explanations.
+        Get a random shloka with explanation.
         
         If user is provided:
         - Excludes shlokas that user has marked as read
@@ -38,7 +38,7 @@ class ShlokaService:
             user: Optional User object to filter based on read status
         
         Returns:
-            dict: ShlokaResponse with shloka, summary, and detailed explanations
+            dict: ShlokaResponse with shloka and explanation
         """
         try:
             # If user is provided, check if we need to extract more shlokas dynamically
@@ -139,14 +139,13 @@ class ShlokaService:
                     defaults={'last_shown_at': timezone.now()}
                 )
             
-            # Get explanations directly from database (pre-generated)
-            summary = self.get_explanation(shloka.id, ReadingType.SUMMARY)
-            detailed = self.get_explanation(shloka.id, ReadingType.DETAILED)
+            # Get explanation directly from database (pre-generated)
+            # There's only one explanation per shloka now
+            explanation = ShlokaExplanation.objects.filter(shloka_id=shloka.id).first()
             
             return {
                 'shloka': shloka,
-                'summary': summary,
-                'detailed': detailed,
+                'explanation': explanation,
             }
             
         except Exception as e:
@@ -155,25 +154,24 @@ class ShlokaService:
     
     def get_shloka_by_id(self, shloka_id):
         """
-        Get shloka by ID with both summary and detailed explanations.
+        Get shloka by ID with explanation.
         
         Args:
             shloka_id: UUID of the shloka
             
         Returns:
-            dict: ShlokaResponse with shloka, summary, and detailed explanations
+            dict: ShlokaResponse with shloka and explanation
         """
         try:
             shloka = Shloka.objects.get(id=shloka_id)
             
-            # Get explanations directly from database (pre-generated)
-            summary = self.get_explanation(shloka_id, ReadingType.SUMMARY)
-            detailed = self.get_explanation(shloka_id, ReadingType.DETAILED)
+            # Get explanation directly from database (pre-generated)
+            # There's only one explanation per shloka now
+            explanation = ShlokaExplanation.objects.filter(shloka_id=shloka_id).first()
             
             return {
                 'shloka': shloka,
-                'summary': summary,
-                'detailed': detailed,
+                'explanation': explanation,
             }
         except Shloka.DoesNotExist:
             raise Exception(f"Shloka with ID {shloka_id} not found")
@@ -210,21 +208,20 @@ class ShlokaService:
             logger.error(f"Error getting explanation: {str(e)}")
             return None
     
-    def generate_and_store_explanation(self, shloka, explanation_type):
+    def generate_and_store_explanation(self, shloka):
         """
-        Generate explanation using Groq and store in database.
+        Generate structured explanation using Groq and store in database.
+        
+        Uses the new structured format (no explanation_type distinction).
+        All structured fields are generated and saved directly.
         
         Args:
             shloka: Shloka model instance
-            explanation_type: Either ReadingType.SUMMARY or ReadingType.DETAILED
             
         Returns:
             ShlokaExplanation object or None if generation failed
         """
         try:
-            # Convert explanation_type to string format expected by GroqService
-            explanation_type_str = explanation_type.lower() if hasattr(explanation_type, 'lower') else str(explanation_type).lower()
-            
             # Convert shloka to dict for Groq service
             shloka_dict = {
                 "book_name": shloka.book_name,
@@ -251,59 +248,69 @@ class ShlokaService:
                 logger.warning(f"Failed to extract book context for shloka {shloka.id}: {str(e)}")
                 book_context = None
             
-            # Generate explanation with book context
+            # Generate structured explanation with book context
             try:
-                explanation_text, prompt, structured_data = self.groq_service.generate_explanation(
-                    shloka_dict, explanation_type_str, book_context=book_context
+                structured_data = self.groq_service.generate_structured_explanation(
+                    shloka_dict, book_context=book_context
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to generate explanation for shloka {shloka.id} "
-                    f"(type: {explanation_type}): {str(e)}"
+                    f"Failed to generate structured explanation for shloka {shloka.id}: {str(e)}"
                 )
                 # Don't raise - return None so the process can continue with other shlokas
                 return None
             
-            # Validate that we got a non-empty explanation
-            if not explanation_text or len(explanation_text.strip()) < 50:
+            # Validate that we got structured data
+            if not structured_data:
                 logger.warning(
-                    f"Generated explanation is empty or too short for shloka {shloka.id} "
-                    f"(type: {explanation_type}). Length: {len(explanation_text) if explanation_text else 0}. "
+                    f"Generated explanation is empty for shloka {shloka.id}. "
                     f"Skipping this explanation."
                 )
                 return None
             
-            # Save word_by_word to Shloka model (only once, prefer detailed if available)
-            word_by_word = structured_data.get('word_by_word')
-            if word_by_word:
-                # Prefer detailed explanation's word_by_word, but update if shloka doesn't have it yet
-                # or if this is a detailed explanation (more comprehensive)
-                if explanation_type == ReadingType.DETAILED or not shloka.word_by_word:
-                    shloka.word_by_word = word_by_word
-                    shloka.save(update_fields=['word_by_word', 'updated_at'])
-                    logger.debug(f"Saved word_by_word to shloka {shloka.id} from {explanation_type} explanation")
+            # Validate that at least some fields are populated
+            required_fields = ['summary', 'detailed_meaning', 'detailed_explanation']
+            if not any(structured_data.get(field) for field in required_fields):
+                logger.warning(
+                    f"Generated explanation has no required fields for shloka {shloka.id}. "
+                    f"Skipping this explanation."
+                )
+                return None
             
-            # Remove WORD-BY-WORD section from explanation_text before saving
-            # Word-by-word is stored only in the Shloka model, not in explanations
-            explanation_text_cleaned = self._remove_word_by_word_section(explanation_text)
-            
-            # Use update_or_create to handle both new and existing explanations
-            # This allows the command to regenerate explanations without deleting first
-            explanation, created = ShlokaExplanation.objects.update_or_create(
+            # Use get_or_create to handle both new and existing explanations
+            # Only one explanation per shloka now (no explanation_type)
+            explanation, created = ShlokaExplanation.objects.get_or_create(
                 shloka=shloka,
-                explanation_type=explanation_type,
                 defaults={
-                    'explanation_text': explanation_text_cleaned,
+                    'summary': structured_data.get('summary', ''),
+                    'detailed_meaning': structured_data.get('detailed_meaning', ''),
+                    'detailed_explanation': structured_data.get('detailed_explanation', ''),
+                    'context': structured_data.get('context', ''),
+                    'why_this_matters': structured_data.get('why_this_matters', ''),
+                    'modern_examples': structured_data.get('modern_examples', []),
+                    'themes': structured_data.get('themes', []),
+                    'reflection_prompt': structured_data.get('reflection_prompt', ''),
                     'ai_model_used': self.groq_service.model,
-                    'generation_prompt': prompt,
-                    'why_this_matters': structured_data.get('why_this_matters'),
-                    'context': structured_data.get('context'),
-                    'modern_examples': structured_data.get('modern_examples'),
-                    'themes': structured_data.get('themes'),
-                    'reflection_prompt': structured_data.get('reflection_prompt'),
+                    'generation_prompt': structured_data.get('generation_prompt', ''),
+                    'quality_score': 0,  # Will be checked later by QA tasks
                 }
             )
             
+            # If explanation already exists, update it
+            if not created:
+                explanation.summary = structured_data.get('summary', '') or explanation.summary
+                explanation.detailed_meaning = structured_data.get('detailed_meaning', '') or explanation.detailed_meaning
+                explanation.detailed_explanation = structured_data.get('detailed_explanation', '') or explanation.detailed_explanation
+                explanation.context = structured_data.get('context', '') or explanation.context
+                explanation.why_this_matters = structured_data.get('why_this_matters', '') or explanation.why_this_matters
+                explanation.modern_examples = structured_data.get('modern_examples', []) or explanation.modern_examples
+                explanation.themes = structured_data.get('themes', []) or explanation.themes
+                explanation.reflection_prompt = structured_data.get('reflection_prompt', '') or explanation.reflection_prompt
+                explanation.ai_model_used = self.groq_service.model
+                explanation.generation_prompt = structured_data.get('generation_prompt', '') or explanation.generation_prompt
+                explanation.save()
+            
+            logger.info(f"{'Created' if created else 'Updated'} structured explanation for shloka {shloka.id}")
             return explanation
             
         except Exception as e:

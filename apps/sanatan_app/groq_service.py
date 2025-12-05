@@ -224,6 +224,119 @@ FORMAT REQUIREMENT: Use ONLY list format with bullet points (-). NEVER use table
             raise last_exception
         raise Exception("Failed to generate explanation: Unknown error")
     
+    def generate_structured_explanation(
+        self,
+        shloka: dict,
+        book_context: Optional[dict] = None
+    ) -> dict:
+        """
+        Generate structured explanation fields directly (new method for structured model).
+        
+        This method generates all structured fields matching the ShlokaExplanation model:
+        - summary
+        - detailed_meaning
+        - detailed_explanation
+        - context
+        - why_this_matters
+        - modern_examples (JSON array)
+        - themes (JSON array)
+        - reflection_prompt
+        
+        Args:
+            shloka: Dictionary containing shloka data with keys:
+                - book_name (str): Name of the book
+                - chapter_number (int): Chapter number
+                - verse_number (int): Verse number
+                - sanskrit_text (str): Sanskrit text (required)
+                - transliteration (str, optional): Transliteration in Roman script
+            book_context: Optional dictionary with 'english_context' and 'hindi_context' keys
+                         containing relevant passages from the source books
+            
+        Returns:
+            Dictionary with structured fields:
+            {
+                'summary': str,
+                'detailed_meaning': str,
+                'detailed_explanation': str,
+                'context': str,
+                'why_this_matters': str,
+                'modern_examples': list[dict],
+                'themes': list[str],
+                'reflection_prompt': str,
+                'generation_prompt': str,
+            }
+        """
+        import json
+        
+        # Build prompt for structured generation
+        prompt = self._build_structured_prompt(shloka, book_context)
+        
+        # Retry logic
+        retry_attempts = [
+            {"book_context": book_context, "reduce_context": False, "increase_tokens": False},
+            {"book_context": None, "reduce_context": False, "increase_tokens": True},
+            {"book_context": None, "reduce_context": True, "increase_tokens": True},
+        ]
+        
+        last_exception = None
+        
+        for attempt_num, retry_config in enumerate(retry_attempts, 1):
+            try:
+                current_context = retry_config["book_context"]
+                reduce_context = retry_config["reduce_context"]
+                increase_tokens = retry_config["increase_tokens"]
+                
+                prompt = self._build_structured_prompt(shloka, current_context, reduce_context=reduce_context)
+                max_tokens = int(self.DETAILED_MAX_TOKENS * 1.5) if increase_tokens else self.DETAILED_MAX_TOKENS
+                
+                # Generate explanation
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": self._get_structured_system_message()},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.TEMPERATURE,
+                    max_tokens=max_tokens,
+                )
+                
+                response_content = response.choices[0].message.content.strip()
+                
+                if not response_content:
+                    if attempt_num < len(retry_attempts):
+                        continue
+                    raise Exception("Empty response from AI")
+                
+                # Try to parse as JSON first
+                structured_data = self._parse_structured_json_response(response_content)
+                
+                # If JSON parsing failed, try to extract from text format
+                if not structured_data:
+                    structured_data = self._parse_structured_text_response(response_content)
+                
+                if structured_data:
+                    structured_data['generation_prompt'] = prompt
+                    logger.info(
+                        f"Generated structured explanation for {shloka.get('book_name')} "
+                        f"Chapter {shloka.get('chapter_number')}, Verse {shloka.get('verse_number')}"
+                    )
+                    return structured_data
+                else:
+                    raise Exception("Failed to parse structured data from response")
+                    
+            except Exception as e:
+                last_exception = e
+                if attempt_num < len(retry_attempts):
+                    logger.warning(f"Error generating structured explanation (attempt {attempt_num}): {str(e)}. Retrying...")
+                    continue
+                else:
+                    logger.error(f"Error generating structured explanation after {len(retry_attempts)} attempts: {str(e)}")
+                    raise Exception(f"Failed to generate structured explanation after {len(retry_attempts)} attempts: {str(e)}")
+        
+        if last_exception:
+            raise last_exception
+        raise Exception("Failed to generate structured explanation: Unknown error")
+    
     def parse_structured_data_from_text(self, explanation_text: str, explanation_type: str) -> dict:
         """
         Parse structured data from existing explanation text.
@@ -692,6 +805,235 @@ FORMAT REQUIREMENT: Use ONLY list format with bullet points (-). NEVER use table
         normalized_text = re.sub(r'\n{3,}', '\n\n', normalized_text)  # Max 2 consecutive newlines
         
         return normalized_text.strip()
+    
+    def _get_structured_system_message(self) -> str:
+        """Get system message for structured explanation generation."""
+        return """You are an expert in Hindu philosophy, Sanskrit literature, and the Bhagavad Gita. 
+Provide clear, accessible explanations that help modern readers understand the deep wisdom of these ancient texts.
+
+Your task is to generate a structured explanation with specific fields. You MUST respond in valid JSON format.
+
+The response should be a JSON object with these exact keys:
+- summary: Brief overview (2-3 sentences)
+- detailed_meaning: Core meaning and philosophical significance
+- detailed_explanation: Deeper understanding and interpretation
+- context: When/why it was said, context in the dialogue/story
+- why_this_matters: Modern relevance and practical importance
+- modern_examples: Array of objects with "category" and "description" fields
+- themes: Array of strings (key themes like "Dharma", "Karma", "Wisdom")
+- reflection_prompt: A thoughtful question for contemplation
+
+Be accurate, respectful to traditional interpretations, and use modern, accessible language."""
+    
+    def _build_structured_prompt(
+        self, 
+        shloka: dict, 
+        book_context: Optional[dict] = None,
+        reduce_context: bool = False
+    ) -> str:
+        """Build prompt for structured explanation generation."""
+        if not shloka.get('sanskrit_text'):
+            raise ValueError("sanskrit_text is required for generating explanations")
+        
+        book_name = shloka.get('book_name', 'Bhagavad Gita')
+        chapter_number = shloka.get('chapter_number', '')
+        verse_number = shloka.get('verse_number', '')
+        sanskrit_text = shloka.get('sanskrit_text', '')
+        transliteration = shloka.get('transliteration', '').strip()
+        
+        prompt_parts = [
+            f"Generate a structured explanation for this shloka from {book_name}",
+        ]
+        
+        if chapter_number and verse_number:
+            prompt_parts.append(f"Chapter {chapter_number}, Verse {verse_number}")
+        elif chapter_number:
+            prompt_parts.append(f"Chapter {chapter_number}")
+        elif verse_number:
+            prompt_parts.append(f"Verse {verse_number}")
+        
+        prompt_parts.extend([
+            ":",
+            "",
+            "Sanskrit Text:",
+            sanskrit_text,
+            "",
+        ])
+        
+        if transliteration:
+            prompt_parts.extend([
+                "Transliteration:",
+                transliteration,
+                "",
+            ])
+        
+        # Add book context if available
+        if book_context:
+            if book_context.get('english_context'):
+                context_text = book_context['english_context']
+                if reduce_context:
+                    context_text = context_text[:500] + "..." if len(context_text) > 500 else context_text
+                prompt_parts.extend([
+                    "Reference Context (English Translation):",
+                    context_text,
+                    "",
+                ])
+            
+            if book_context.get('hindi_context'):
+                context_text = book_context['hindi_context']
+                if reduce_context:
+                    context_text = context_text[:500] + "..." if len(context_text) > 500 else context_text
+                prompt_parts.extend([
+                    "Reference Context (Hindi Translation):",
+                    context_text,
+                    "",
+                ])
+            
+            prompt_parts.append("Use the above reference context to inform your explanation, ensuring accuracy.")
+            prompt_parts.append("")
+        
+        prompt_parts.extend([
+            "Provide a structured explanation in JSON format with these fields:",
+            "",
+            "1. summary: Brief overview (2-3 sentences) that captures the essence",
+            "2. detailed_meaning: Core meaning and philosophical significance",
+            "3. detailed_explanation: Deeper understanding and interpretation",
+            "4. context: When/why it was said, context in the dialogue/story",
+            "5. why_this_matters: Modern relevance and practical importance",
+            "6. modern_examples: Array of objects, each with 'category' and 'description' fields",
+            "   Example: [{\"category\": \"In Your Career\", \"description\": \"...\"}, ...]",
+            "7. themes: Array of strings (e.g., [\"Dharma\", \"Karma\", \"Wisdom\"])",
+            "8. reflection_prompt: A thoughtful question for contemplation",
+            "",
+            "Respond ONLY with valid JSON. Do not include any text before or after the JSON.",
+        ])
+        
+        return "\n".join(prompt_parts)
+    
+    def _parse_structured_json_response(self, response_text: str) -> Optional[dict]:
+        """Parse structured data from JSON response."""
+        import json
+        import re
+        
+        # Try to extract JSON from response (might be wrapped in markdown code blocks)
+        json_text = response_text.strip()
+        
+        # Remove markdown code blocks if present
+        if json_text.startswith('```'):
+            # Extract JSON from code block
+            lines = json_text.split('\n')
+            json_lines = []
+            in_code_block = False
+            for line in lines:
+                if line.strip().startswith('```'):
+                    in_code_block = not in_code_block
+                    continue
+                if in_code_block:
+                    json_lines.append(line)
+            json_text = '\n'.join(json_lines)
+        
+        # Try to find JSON object in text
+        json_match = re.search(r'\{.*\}', json_text, re.DOTALL)
+        if json_match:
+            json_text = json_match.group(0)
+        
+        try:
+            data = json.loads(json_text)
+            
+            # Validate and normalize structure
+            structured = {
+                'summary': data.get('summary', ''),
+                'detailed_meaning': data.get('detailed_meaning', ''),
+                'detailed_explanation': data.get('detailed_explanation', ''),
+                'context': data.get('context', ''),
+                'why_this_matters': data.get('why_this_matters', ''),
+                'modern_examples': data.get('modern_examples', []),
+                'themes': data.get('themes', []),
+                'reflection_prompt': data.get('reflection_prompt', ''),
+            }
+            
+            # Validate modern_examples format
+            if structured['modern_examples']:
+                if not isinstance(structured['modern_examples'], list):
+                    structured['modern_examples'] = []
+                else:
+                    # Ensure each example has category and description
+                    validated_examples = []
+                    for ex in structured['modern_examples']:
+                        if isinstance(ex, dict) and 'category' in ex and 'description' in ex:
+                            validated_examples.append(ex)
+                    structured['modern_examples'] = validated_examples
+            
+            # Validate themes format
+            if structured['themes']:
+                if not isinstance(structured['themes'], list):
+                    structured['themes'] = []
+                else:
+                    # Ensure all themes are strings
+                    structured['themes'] = [str(t) for t in structured['themes'] if t]
+            
+            return structured
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON response: {str(e)}")
+            return None
+    
+    def _parse_structured_text_response(self, response_text: str) -> Optional[dict]:
+        """Fallback: Parse structured data from text format (if JSON parsing fails)."""
+        # This is a fallback - try to extract fields from text format
+        # Similar to existing _parse_structured_data but for new structure
+        structured = {
+            'summary': '',
+            'detailed_meaning': '',
+            'detailed_explanation': '',
+            'context': '',
+            'why_this_matters': '',
+            'modern_examples': [],
+            'themes': [],
+            'reflection_prompt': '',
+        }
+        
+        try:
+            sections = self._extract_sections(response_text)
+            
+            # Map old sections to new structure
+            if 'MEANING' in sections:
+                structured['detailed_meaning'] = sections['MEANING'].strip()
+            
+            if 'EXPLANATION' in sections:
+                structured['detailed_explanation'] = sections['EXPLANATION'].strip()
+            
+            if 'PRACTICAL APPLICATION' in sections:
+                structured['why_this_matters'] = sections['PRACTICAL APPLICATION'].strip()
+            
+            if 'MEANING' in sections:
+                # Try to extract context from MEANING section
+                meaning_text = sections['MEANING']
+                lines = meaning_text.split('\n')
+                context_lines = [line for line in lines if any(word in line.lower() for word in ['context', 'dialogue', 'story', 'situation', 'background'])]
+                if context_lines:
+                    structured['context'] = '\n'.join(context_lines).strip()
+                elif meaning_text.strip():
+                    structured['context'] = meaning_text.strip()
+            
+            if 'EXAMPLES' in sections:
+                examples_text = sections['EXAMPLES']
+                parsed_examples = self._parse_modern_examples(examples_text)
+                if parsed_examples:
+                    structured['modern_examples'] = parsed_examples
+            
+            structured['themes'] = self._extract_themes(response_text)
+            structured['reflection_prompt'] = self._generate_reflection_prompt(response_text)
+            
+            # Generate summary from detailed_meaning if available
+            if structured['detailed_meaning']:
+                structured['summary'] = structured['detailed_meaning'].split('.')[0] + '.' if '.' in structured['detailed_meaning'] else structured['detailed_meaning'][:200]
+            
+            return structured if any(structured.values()) else None
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse structured text response: {str(e)}")
+            return None
     
     def _generate_reflection_prompt(self, text: str) -> str:
         """Generate a reflection prompt based on explanation content."""

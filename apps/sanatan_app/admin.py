@@ -15,10 +15,28 @@ class ShlokaAdmin(admin.ModelAdmin):
 @admin.register(ShlokaExplanation)
 class ShlokaExplanationAdmin(admin.ModelAdmin):
     """Admin interface for ShlokaExplanation model."""
-    list_display = ['id', 'shloka', 'explanation_type', 'ai_model_used', 'created_at']
-    list_filter = ['explanation_type', 'ai_model_used', 'created_at']
-    search_fields = ['explanation_text', 'shloka__book_name']
-    readonly_fields = ['id', 'created_at', 'updated_at']
+    list_display = ['id', 'shloka', 'quality_score', 'improvement_version', 'ai_model_used', 'created_at']
+    list_filter = ['quality_score', 'ai_model_used', 'created_at', 'quality_checked_at']
+    search_fields = ['summary', 'detailed_meaning', 'detailed_explanation', 'context', 'shloka__book_name']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'quality_checked_at']
+    fieldsets = (
+        ('Shloka', {
+            'fields': ('shloka',)
+        }),
+        ('Structured Content', {
+            'fields': ('summary', 'detailed_meaning', 'detailed_explanation', 'context', 
+                      'why_this_matters', 'modern_examples', 'themes', 'reflection_prompt')
+        }),
+        ('Quality Tracking', {
+            'fields': ('quality_score', 'quality_checked_at', 'improvement_version')
+        }),
+        ('Metadata', {
+            'fields': ('ai_model_used', 'generation_prompt')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at')
+        }),
+    )
 
 
 @admin.register(User)

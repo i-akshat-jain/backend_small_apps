@@ -10,6 +10,9 @@ from .views import (
     TokenRefreshView,
     ReadingLogView,
     UserStatsView,
+    UserStreakView,
+    UserStreakFreezeView,
+    UserStreakHistoryView,
     FavoriteView,
     MarkShlokaReadView,
     ChatConversationListView,
@@ -30,6 +33,9 @@ urlpatterns = [
     path('api/reading-logs', ReadingLogView.as_view(), name='reading-log-create'),
     # User endpoints
     path('api/user/stats', UserStatsView.as_view(), name='user-stats'),
+    path('api/user/streak', UserStreakView.as_view(), name='user-streak'),
+    path('api/user/streak/freeze', UserStreakFreezeView.as_view(), name='user-streak-freeze'),
+    path('api/user/streak/history', UserStreakHistoryView.as_view(), name='user-streak-history'),
     # Favorites endpoints - GET to list, POST to add, DELETE with query param to remove
     path('api/favorites', FavoriteView.as_view(), name='favorites'),
     # Chatbot endpoints

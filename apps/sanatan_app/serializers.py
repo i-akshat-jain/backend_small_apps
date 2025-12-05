@@ -1,7 +1,7 @@
 """Serializers for Sanatan App API."""
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
-from .models import Shloka, ShlokaExplanation, ReadingType, User, ReadingLog, Favorite, Achievement, UserAchievement, ChatConversation, ChatMessage
+from .models import Shloka, ShlokaExplanation, ReadingType, User, ReadingLog, Favorite, Achievement, UserAchievement, ChatConversation, ChatMessage, UserStreak
 
 
 class ShlokaSerializer(serializers.ModelSerializer):
@@ -24,33 +24,58 @@ class ShlokaSerializer(serializers.ModelSerializer):
 
 
 class ExplanationSerializer(serializers.ModelSerializer):
-    """Serializer for ShlokaExplanation model."""
+    """Serializer for ShlokaExplanation model with structured fields."""
+    
+    # Computed field for backward compatibility
+    explanation_text = serializers.SerializerMethodField()
+    shloka_id = serializers.UUIDField(source='shloka.id', read_only=True)
     
     class Meta:
         model = ShlokaExplanation
         fields = [
             'id',
             'shloka_id',
-            'explanation_type',
-            'explanation_text',
-            'ai_model_used',
-            'generation_prompt',
-            'why_this_matters',
+            # Structured fields
+            'summary',
+            'detailed_meaning',
+            'detailed_explanation',
             'context',
+            'why_this_matters',
             'modern_examples',
             'themes',
             'reflection_prompt',
+            # Quality tracking
+            'quality_score',
+            'quality_checked_at',
+            'improvement_version',
+            # Metadata
+            'ai_model_used',
+            'generation_prompt',
+            # Computed field (backward compatibility)
+            'explanation_text',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'shloka_id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 
+            'shloka_id', 
+            'explanation_text',
+            'quality_score',
+            'quality_checked_at',
+            'improvement_version',
+            'created_at', 
+            'updated_at'
+        ]
+    
+    def get_explanation_text(self, obj):
+        """Get computed explanation_text from structured fields."""
+        return obj.explanation_text
 
 
 class ShlokaResponseSerializer(serializers.Serializer):
-    """Serializer for complete Shloka response with explanations."""
+    """Serializer for complete Shloka response with explanation."""
     shloka = ShlokaSerializer()
-    summary = ExplanationSerializer(allow_null=True, required=False)
-    detailed = ExplanationSerializer(allow_null=True, required=False)
+    explanation = ExplanationSerializer(allow_null=True, required=False)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -164,6 +189,33 @@ class UserAchievementSerializer(serializers.ModelSerializer):
         model = UserAchievement
         fields = ['id', 'achievement', 'unlocked_at']
         read_only_fields = ['id', 'unlocked_at']
+
+
+class UserStreakSerializer(serializers.ModelSerializer):
+    """Serializer for UserStreak model."""
+    
+    class Meta:
+        model = UserStreak
+        fields = [
+            'id',
+            'current_streak',
+            'longest_streak',
+            'streak_freeze_used_this_month',
+            'last_streak_date',
+            'total_streak_days',
+            'streak_freeze_reset_date',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'current_streak',
+            'longest_streak',
+            'last_streak_date',
+            'total_streak_days',
+            'created_at',
+            'updated_at',
+        ]
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):

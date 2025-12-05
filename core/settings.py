@@ -231,3 +231,47 @@ SIMPLE_JWT = {
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
+
+# Celery Configuration
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
+CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 25 minutes
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Process one task at a time
+
+# Celery Beat Configuration (for scheduled tasks)
+# These are periodic tasks that will be executed by Celery Beat scheduler
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    # Daily at 5 AM: QA for existing Shlokas (matches architecture diagram)
+    # Flow: QA → If not good enough → Groq → QA again → Save to DB
+    'qa-existing-shlokas-daily': {
+        'task': 'sanatan_app.batch_qa_existing_shlokas',
+        'schedule': crontab(hour=5, minute=0),  # Run daily at 5 AM UTC (as per architecture)
+        'args': (100, 70),  # max_shlokas=100, quality_threshold=70
+    },
+    # Daily: Check quality of explanations that have never been checked (supplementary)
+    'check-unchecked-explanations-daily': {
+        'task': 'sanatan_app.batch_check_shlokas_quality',
+        'schedule': crontab(hour=2, minute=0),  # Run daily at 2 AM UTC
+        'args': (100, True, None, None, None),  # max_shlokas=100, never_checked=True
+    },
+    # Weekly: Improve low-quality explanations (supplementary)
+    'improve-low-quality-explanations-weekly': {
+        'task': 'sanatan_app.batch_improve_shlokas',
+        'schedule': crontab(hour=3, minute=0, day_of_week=0),  # Run weekly on Sunday at 3 AM UTC
+        'args': (50, 70, 3, 70),  # max_shlokas=50, max_score_threshold=70, max_iterations=3, min_score_threshold=70
+    },
+    # Monthly: Re-check explanations checked more than 30 days ago (supplementary)
+    'recheck-old-explanations-monthly': {
+        'task': 'sanatan_app.batch_check_shlokas_quality',
+        'schedule': crontab(hour=4, minute=0, day_of_month=1),  # Run monthly on 1st at 4 AM UTC
+        'args': (200, False, 30, None, None),  # max_shlokas=200, never_checked=False, checked_before_days=30
+    },
+}
