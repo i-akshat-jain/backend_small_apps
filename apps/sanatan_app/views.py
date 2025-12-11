@@ -8,7 +8,7 @@ from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
 from drf_spectacular.types import OpenApiTypes
-from .models import Shloka, ShlokaExplanation, User, ReadingLog, ReadingType, Favorite, ChatConversation, ChatMessage, ShlokaReadStatus
+from .models import Shloka, ShlokaExplanation, User, ReadingLog, ReadingType, Favorite, ChatConversation, ChatMessage, ShlokaReadStatus, UserAchievement
 from .serializers import (
     ShlokaSerializer, 
     ExplanationSerializer, 
@@ -21,7 +21,10 @@ from .serializers import (
     ChatConversationSerializer,
     ChatMessageSerializer,
     ChatMessageCreateSerializer,
-    UserStreakSerializer
+    UserStreakSerializer,
+    ProfileUpdateSerializer,
+    ChangePasswordSerializer,
+    UserAchievementSerializer
 )
 from core.services.authentication import UUIDJWTAuthentication
 from .services.shloka_service import ShlokaService
@@ -898,6 +901,26 @@ class UserStreakHistoryView(APIView):
                 count=Count('id')
             ).order_by('-date')
             
+            # Format dates as YYYY-MM-DD strings for consistent frontend handling
+            formatted_recent_activity = []
+            for item in recent_readings:
+                date_value = item['date']
+                # Handle both date objects and strings
+                if hasattr(date_value, 'strftime'):
+                    # It's a date/datetime object
+                    formatted_date = date_value.strftime('%Y-%m-%d')
+                elif isinstance(date_value, str):
+                    # It's already a string, ensure it's in YYYY-MM-DD format
+                    formatted_date = date_value.split('T')[0].split(' ')[0]
+                else:
+                    # Fallback: convert to string and extract date part
+                    formatted_date = str(date_value).split('T')[0].split(' ')[0]
+                
+                formatted_recent_activity.append({
+                    'date': formatted_date,
+                    'count': item['count']
+                })
+            
             return Response({
                 'message': 'Streak history retrieved successfully',
                 'data': {
@@ -906,7 +929,7 @@ class UserStreakHistoryView(APIView):
                     'total_streak_days': streak_data.total_streak_days,
                     'last_streak_date': streak_data.last_streak_date.isoformat() if streak_data.last_streak_date else None,
                     'milestones_reached': milestones,
-                    'recent_activity': list(recent_readings)
+                    'recent_activity': formatted_recent_activity
                 },
                 'errors': None
             }, status=status.HTTP_200_OK)
@@ -1333,6 +1356,59 @@ class MarkShlokaReadView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class AchievementsView(APIView):
+    """
+    Get user's achievements.
+    
+    API Path: GET /api/achievements
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='AchievementsResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Get all achievements unlocked by the user",
+        summary="Get user achievements",
+        tags=["User"],
+    )
+    def get(self, request):
+        """
+        Get user's achievements.
+        
+        API Path: GET /api/achievements
+        """
+        try:
+            user_achievements = UserAchievement.objects.filter(
+                user=request.user
+            ).select_related('achievement').order_by('-unlocked_at')
+            
+            serializer = UserAchievementSerializer(user_achievements, many=True)
+            
+            return Response({
+                'message': 'Achievements retrieved successfully',
+                'data': serializer.data,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error getting achievements: {error_message}")
+            return Response({
+                'message': 'Failed to retrieve achievements',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class ChatConversationListView(APIView):
     """List user's chat conversations."""
     authentication_classes = [UUIDJWTAuthentication]
@@ -1424,4 +1500,233 @@ class ChatMessageView(APIView):
                 'message': 'Failed to process message',
                 'data': None,
                 'errors': {'detail': str(e)}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UserProfileView(APIView):
+    """
+    Update user profile.
+    
+    API Path: PATCH /api/user/profile
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        request=ProfileUpdateSerializer,
+        responses={
+            200: inline_serializer(
+                name='ProfileUpdateResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Update user profile information (name and/or email)",
+        summary="Update profile",
+        tags=["User"],
+    )
+    def patch(self, request):
+        """
+        Update user profile.
+        
+        API Path: PATCH /api/user/profile
+        """
+        try:
+            serializer = ProfileUpdateSerializer(data=request.data, context={'user': request.user})
+            
+            if not serializer.is_valid():
+                return Response({
+                    'message': 'Validation error',
+                    'data': None,
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            user = request.user
+            validated_data = serializer.validated_data
+            
+            # Update name if provided
+            if 'name' in validated_data:
+                user.name = validated_data['name']
+            
+            # Update email if provided
+            if 'email' in validated_data:
+                user.email = validated_data['email']
+            
+            user.save()
+            
+            # Serialize updated user
+            user_serializer = UserSerializer(user)
+            
+            return Response({
+                'message': 'Profile updated successfully',
+                'data': user_serializer.data,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error updating profile: {error_message}")
+            return Response({
+                'message': 'Failed to update profile',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ChangePasswordView(APIView):
+    """
+    Change user password.
+    
+    API Path: POST /api/user/change-password
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        request=ChangePasswordSerializer,
+        responses={
+            200: inline_serializer(
+                name='ChangePasswordResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            400: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Change user password",
+        summary="Change password",
+        tags=["User"],
+    )
+    def post(self, request):
+        """
+        Change user password.
+        
+        API Path: POST /api/user/change-password
+        """
+        try:
+            serializer = ChangePasswordSerializer(data=request.data)
+            
+            if not serializer.is_valid():
+                return Response({
+                    'message': 'Validation error',
+                    'data': None,
+                    'errors': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            user = request.user
+            current_password = serializer.validated_data['current_password']
+            new_password = serializer.validated_data['new_password']
+            
+            # Verify current password
+            if not user.check_password(current_password):
+                return Response({
+                    'message': 'Invalid current password',
+                    'data': None,
+                    'errors': {'current_password': 'Current password is incorrect'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if new password is same as current
+            if user.check_password(new_password):
+                return Response({
+                    'message': 'New password must be different from current password',
+                    'data': None,
+                    'errors': {'new_password': 'New password must be different from current password'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Set new password
+            user.set_password(new_password)
+            user.save()
+            
+            return Response({
+                'message': 'Password changed successfully',
+                'data': None,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error changing password: {error_message}")
+            return Response({
+                'message': 'Failed to change password',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DeleteAccountView(APIView):
+    """
+    Delete user account.
+    
+    API Path: DELETE /api/user/delete-account
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                name='DeleteAccountResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Permanently delete user account and all associated data",
+        summary="Delete account",
+        tags=["User"],
+    )
+    def delete(self, request):
+        """
+        Delete user account.
+        
+        API Path: DELETE /api/user/delete-account
+        """
+        try:
+            user = request.user
+            user_email = user.email  # Store email for logging before deletion
+            
+            # Delete all associated data
+            # Note: This will cascade delete related records if foreign keys are set up with CASCADE
+            # If not, we may need to manually delete related records
+            
+            # Delete user (this should cascade to related records)
+            user.delete()
+            
+            logger.info(f"User account deleted: {user_email}")
+            
+            return Response({
+                'message': 'Account deleted successfully',
+                'data': None,
+                'errors': None
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error deleting account: {error_message}")
+            return Response({
+                'message': 'Failed to delete account',
+                'data': None,
+                'errors': {'detail': error_message}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

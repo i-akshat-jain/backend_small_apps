@@ -242,3 +242,57 @@ class ChatMessageCreateSerializer(serializers.Serializer):
     message = serializers.CharField(required=True, max_length=2000)
     conversation_id = serializers.UUIDField(required=False, allow_null=True)
 
+
+class ProfileUpdateSerializer(serializers.Serializer):
+    """Serializer for updating user profile."""
+    name = serializers.CharField(required=False, max_length=255)
+    email = serializers.EmailField(required=False)
+
+    def validate(self, attrs):
+        """Validate that at least one field is provided and email is unique."""
+        if not attrs:
+            raise serializers.ValidationError("At least one field (name or email) must be provided.")
+        
+        # Check email uniqueness if email is being updated
+        if 'email' in attrs:
+            # Get the user instance from context (set in view)
+            user = self.context.get('user')
+            if user:
+                # Check if email is different and already exists
+                if attrs['email'] != user.email:
+                    if User.objects.filter(email=attrs['email']).exists():
+                        raise serializers.ValidationError({
+                            'email': "A user with this email already exists."
+                        })
+            else:
+                # Fallback: check if email exists
+                if User.objects.filter(email=attrs['email']).exists():
+                    raise serializers.ValidationError({
+                        'email': "A user with this email already exists."
+                    })
+        
+        return attrs
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """Serializer for changing user password."""
+    current_password = serializers.CharField(
+        required=True,
+        write_only=True,
+        style={'input_type': 'password'},
+        help_text="Current password"
+    )
+    new_password = serializers.CharField(
+        required=True,
+        write_only=True,
+        min_length=8,
+        style={'input_type': 'password'},
+        help_text="New password must be at least 8 characters long."
+    )
+
+    def validate_new_password(self, value):
+        """Validate new password."""
+        if len(value) < 8:
+            raise serializers.ValidationError("Password must be at least 8 characters long.")
+        return value
+

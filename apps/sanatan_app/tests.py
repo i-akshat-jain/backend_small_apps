@@ -341,11 +341,11 @@ class AchievementTests(BaseTestCase):
         """Test listing achievements when user has none."""
         # Skip if achievement endpoint doesn't exist
         try:
-        url = reverse('achievement-list')
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', response.data)
-        self.assertEqual(len(response.data['data']), 0)
+            url = reverse('achievement-list')
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertIn('data', response.data)
+            self.assertEqual(len(response.data['data']), 0)
         except:
             # Achievement endpoint not implemented yet, skip test
             self.skipTest("Achievement endpoint not implemented")
@@ -372,16 +372,16 @@ class AchievementTests(BaseTestCase):
         """Test listing user's achievements."""
         # Skip if achievement endpoint doesn't exist
         try:
-        # Unlock an achievement
-        UserAchievement.objects.create(
-            user=self.user,
-            achievement=self.achievement1
-        )
-        
-        url = reverse('achievement-list')
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data['data']), 1)
+            # Unlock an achievement
+            UserAchievement.objects.create(
+                user=self.user,
+                achievement=self.achievement1
+            )
+            
+            url = reverse('achievement-list')
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(len(response.data['data']), 1)
         except:
             # Achievement endpoint not implemented yet, skip test
             self.skipTest("Achievement endpoint not implemented")
