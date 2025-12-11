@@ -179,6 +179,78 @@ class ShlokaService:
             logger.error(f"Error getting shloka by ID: {str(e)}")
             raise
     
+    def get_shloka_by_chapter_verse(self, book_name, chapter_number, verse_number):
+        """
+        Get shloka by book name, chapter number, and verse number.
+        If not found in database, automatically extracts it from PDF and generates explanation.
+        
+        Args:
+            book_name: Name of the book (e.g., 'Bhagavad Gita')
+            chapter_number: Chapter number
+            verse_number: Verse number
+            
+        Returns:
+            dict: ShlokaResponse with shloka and explanation
+        """
+        try:
+            # First, try to get from database
+            shloka = Shloka.objects.filter(
+                book_name=book_name,
+                chapter_number=chapter_number,
+                verse_number=verse_number
+            ).first()
+            
+            if shloka:
+                # Get explanation directly from database (pre-generated)
+                explanation = ShlokaExplanation.objects.filter(shloka_id=shloka.id).first()
+                
+                return {
+                    'shloka': shloka,
+                    'explanation': explanation,
+                }
+            
+            # Shloka not found in database - extract it from PDF
+            logger.info(f"Shloka not found in database: {book_name} Chapter {chapter_number}, Verse {verse_number}. Extracting from PDF...")
+            
+            # Extract the specific shloka from PDF
+            extracted_shloka = self._extract_specific_shloka_from_pdf(
+                book_name, chapter_number, verse_number
+            )
+            
+            if not extracted_shloka:
+                raise Exception(f"Could not extract shloka from PDF: {book_name} Chapter {chapter_number}, Verse {verse_number}")
+            
+            # Save the extracted shloka to database
+            shloka = Shloka.objects.create(
+                book_name=extracted_shloka.get('book_name', book_name),
+                chapter_number=extracted_shloka.get('chapter_number', chapter_number),
+                verse_number=extracted_shloka.get('verse_number', verse_number),
+                sanskrit_text=extracted_shloka.get('sanskrit_text', ''),
+                transliteration=extracted_shloka.get('transliteration', ''),
+                word_by_word=extracted_shloka.get('word_by_word'),
+            )
+            
+            logger.info(f"Successfully extracted and saved shloka: {book_name} Chapter {chapter_number}, Verse {verse_number} (ID: {shloka.id})")
+            
+            # Generate and store explanation
+            logger.info(f"Generating explanation for shloka {shloka.id}...")
+            explanation = self.generate_and_store_explanation(shloka)
+            
+            if not explanation:
+                logger.warning(f"Failed to generate explanation for shloka {shloka.id}, but shloka was saved")
+            
+            return {
+                'shloka': shloka,
+                'explanation': explanation,
+            }
+            
+        except Shloka.DoesNotExist:
+            # This shouldn't happen now, but keep for safety
+            raise Exception(f"Shloka not found: {book_name} Chapter {chapter_number}, Verse {verse_number}")
+        except Exception as e:
+            logger.error(f"Error getting shloka by chapter/verse: {str(e)}")
+            raise
+    
     def get_explanation(self, shloka_id, explanation_type=ReadingType.SUMMARY):
         """
         Get explanation for a shloka from database.
@@ -806,6 +878,179 @@ class ShlokaService:
             logger.error(f"Error extracting shlokas with AI: {str(e)}")
             logger.exception(e)
             return []
+    
+    def _extract_specific_shloka_from_pdf(self, book_name, chapter_number, verse_number):
+        """
+        Extract a specific shloka from PDF by chapter and verse number.
+        
+        Args:
+            book_name: Name of the book (e.g., 'Bhagavad Gita')
+            chapter_number: Chapter number
+            verse_number: Verse number
+            
+        Returns:
+            dict: Shloka data with sanskrit_text, transliteration, etc., or None if extraction fails
+        """
+        try:
+            # Load English PDF (primary source)
+            book_path = self.book_context_service.english_book_path
+            if not book_path.exists():
+                logger.warning(f"PDF book not found: {book_path}")
+                return None
+            
+            pdf_reader = self.book_context_service._load_pdf(book_path)
+            if not pdf_reader:
+                logger.warning("Failed to load PDF")
+                return None
+            
+            # Find chapter start page - expand search range
+            estimated_start_page = (chapter_number - 1) * 15
+            estimated_end_page = chapter_number * 15 + 30  # Increased range
+            
+            chapter_start_page = None
+            search_range = range(max(0, estimated_start_page - 10), min(estimated_end_page + 10, len(pdf_reader.pages)))
+            logger.info(f"Searching for Chapter {chapter_number} in pages {min(search_range)}-{max(search_range)}")
+            
+            for page_num in search_range:
+                try:
+                    page = pdf_reader.pages[page_num]
+                    page_text = page.extract_text()
+                    if page_text and (f'Chapter {chapter_number}' in page_text or f'CHAPTER {chapter_number}' in page_text):
+                        # Check if it's actual content (has Devanagari or VERSE)
+                        has_devanagari = any(0x0900 <= ord(c) <= 0x097F for c in page_text)
+                        has_verse = 'VERSE' in page_text or 'verse' in page_text.lower()
+                        if has_devanagari or has_verse:
+                            chapter_start_page = page_num
+                            logger.info(f"Found Chapter {chapter_number} starting at page {page_num}")
+                            break
+                except Exception as e:
+                    logger.debug(f"Error reading page {page_num}: {str(e)}")
+                    continue
+            
+            # Use found page or fallback to estimated
+            if chapter_start_page is not None:
+                start_page = chapter_start_page
+                end_page = min(chapter_start_page + 30, len(pdf_reader.pages))  # Increased range
+            else:
+                start_page = estimated_start_page
+                end_page = estimated_end_page
+                logger.warning(f"Could not find Chapter {chapter_number} start page, using estimated pages {start_page}-{end_page}")
+            
+            # Extract chapter text
+            raw_chapter_text = self.book_context_service._extract_text_from_pdf(
+                pdf_reader, (start_page, end_page)
+            )
+            
+            if not raw_chapter_text:
+                logger.warning(f"No text extracted for chapter {chapter_number}")
+                return None
+            
+            # Clean the extracted text
+            chapter_text = self._clean_pdf_text(raw_chapter_text)
+            logger.info(f"Extracted {len(chapter_text)} characters from chapter {chapter_number} (pages {start_page}-{end_page})")
+            
+            # Log a sample of the text to help debug
+            if chapter_text:
+                sample = chapter_text[:500] if len(chapter_text) > 500 else chapter_text
+                logger.debug(f"Chapter text sample: {sample}")
+            
+            # Split into verse sections
+            verse_sections = self._split_into_verse_sections(chapter_text, chapter_number)
+            logger.info(f"Found {len(verse_sections)} verse sections in chapter {chapter_number}")
+            
+            # Log verse numbers found
+            if verse_sections:
+                verse_numbers_found = [vs.get('verse_number') for vs in verse_sections]
+                logger.info(f"Verse numbers found: {verse_numbers_found[:20]}...")  # Log first 20
+            
+            # Find the specific verse
+            target_verse_section = None
+            for verse_section in verse_sections:
+                if verse_section.get('verse_number') == verse_number:
+                    target_verse_section = verse_section
+                    break
+            
+            # If verse not found in split sections, try to find it directly in the text
+            if not target_verse_section:
+                logger.warning(f"Verse {verse_number} not found in split sections, trying direct search...")
+                
+                # Use book_context_service to search for the verse
+                verse_context = self.book_context_service._search_for_chapter_verse(
+                    chapter_text, chapter_number, verse_number
+                )
+                
+                if verse_context:
+                    # Try to extract using the found context
+                    logger.info(f"Found verse context using direct search, extracting...")
+                    extracted_shloka = self._extract_single_verse_with_ai(
+                        verse_text=verse_context,
+                        verse_num=verse_number,
+                        chapter_num=chapter_number,
+                        context_before="",
+                        context_after=""
+                    )
+                    
+                    if extracted_shloka:
+                        extracted_shloka['book_name'] = book_name
+                        logger.info(f"Successfully extracted verse {verse_number} from chapter {chapter_number} using direct search")
+                        return extracted_shloka
+                
+                # Last resort: try to extract from a larger context around the verse number
+                logger.warning(f"Trying fallback extraction with verse number pattern...")
+                verse_patterns = [
+                    rf'VERSE\s+{verse_number}\b',
+                    rf'Verse\s+{verse_number}\b',
+                    rf'\b{verse_number}\.\s+',
+                    rf'{chapter_number}\.{verse_number}\b',
+                ]
+                
+                for pattern in verse_patterns:
+                    import re
+                    match = re.search(pattern, chapter_text, re.IGNORECASE)
+                    if match:
+                        # Extract context around the match
+                        start_idx = max(0, match.start() - 200)
+                        end_idx = min(len(chapter_text), match.end() + 2000)
+                        verse_text_snippet = chapter_text[start_idx:end_idx]
+                        
+                        logger.info(f"Found verse pattern match, extracting from snippet...")
+                        extracted_shloka = self._extract_single_verse_with_ai(
+                            verse_text=verse_text_snippet,
+                            verse_num=verse_number,
+                            chapter_num=chapter_number,
+                            context_before="",
+                            context_after=""
+                        )
+                        
+                        if extracted_shloka:
+                            extracted_shloka['book_name'] = book_name
+                            logger.info(f"Successfully extracted verse {verse_number} from chapter {chapter_number} using pattern match")
+                            return extracted_shloka
+                        break
+                
+                logger.error(f"Could not find verse {verse_number} in chapter {chapter_number} text using any method")
+                return None
+            
+            # Extract the specific verse using AI
+            logger.info(f"Extracting verse {verse_number} from chapter {chapter_number}...")
+            extracted_shloka = self._extract_single_verse_with_ai(
+                verse_text=target_verse_section.get('text', ''),
+                verse_num=verse_number,
+                chapter_num=chapter_number,
+                context_before=target_verse_section.get('context_before', ''),
+                context_after=target_verse_section.get('context_after', '')
+            )
+            
+            if extracted_shloka:
+                extracted_shloka['book_name'] = book_name
+                logger.info(f"Successfully extracted verse {verse_number} from chapter {chapter_number}")
+            
+            return extracted_shloka
+            
+        except Exception as e:
+            logger.error(f"Error extracting specific shloka from PDF: {str(e)}")
+            logger.exception(e)
+            return None
     
     def _split_into_verse_sections(self, chapter_text, chapter_num):
         """

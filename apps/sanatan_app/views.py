@@ -258,6 +258,117 @@ class ShlokaDetailView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class ShlokaByChapterVerseView(APIView):
+    """
+    Get a specific shloka by book name, chapter number, and verse number.
+    
+    API Path: GET /api/shlokas/by-chapter-verse?book_name=Bhagavad Gita&chapter=3&verse=30
+    """
+    authentication_classes = [UUIDJWTAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name='book_name',
+                description='Name of the book (e.g., "Bhagavad Gita")',
+                required=True,
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY
+            ),
+            OpenApiParameter(
+                name='chapter',
+                description='Chapter number',
+                required=True,
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY
+            ),
+            OpenApiParameter(
+                name='verse',
+                description='Verse number',
+                required=True,
+                type=OpenApiTypes.INT,
+                location=OpenApiParameter.QUERY
+            ),
+        ],
+        responses={
+            200: inline_serializer(
+                name='ShlokaByChapterVerseResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+            404: inline_serializer(
+                name='ErrorResponse',
+                fields={
+                    'message': OpenApiTypes.STR,
+                    'data': OpenApiTypes.OBJECT,
+                    'errors': OpenApiTypes.OBJECT,
+                }
+            ),
+        },
+        description="Get a specific shloka by book name, chapter number, and verse number.",
+        summary="Get shloka by chapter and verse",
+        tags=["Shlokas"],
+    )
+    def get(self, request):
+        """
+        Get a specific shloka by book name, chapter number, and verse number.
+        """
+        try:
+            book_name = request.query_params.get('book_name', 'Bhagavad Gita')
+            chapter_number = request.query_params.get('chapter')
+            verse_number = request.query_params.get('verse')
+            
+            if not chapter_number or not verse_number:
+                return Response({
+                    'message': 'Missing required parameters',
+                    'data': None,
+                    'errors': {'detail': 'Both chapter and verse parameters are required'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                chapter_number = int(chapter_number)
+                verse_number = int(verse_number)
+            except ValueError:
+                return Response({
+                    'message': 'Invalid parameters',
+                    'data': None,
+                    'errors': {'detail': 'Chapter and verse must be valid integers'}
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            shloka_service = ShlokaService()
+            result = shloka_service.get_shloka_by_chapter_verse(
+                book_name=book_name,
+                chapter_number=chapter_number,
+                verse_number=verse_number
+            )
+            
+            # Use helper function to ensure consistent format
+            response_data = _format_shloka_response(result, 'Shloka retrieved successfully')
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            error_message = str(e)
+            logger.error(f"Error in get_shloka_by_chapter_verse: {error_message}")
+            
+            if "not found" in error_message.lower():
+                return Response({
+                    'message': 'Shloka not found',
+                    'data': None,
+                    'errors': {'detail': error_message}
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            return Response({
+                'message': 'Failed to retrieve shloka',
+                'data': None,
+                'errors': {'detail': error_message}
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class HealthCheckView(APIView):
     """
     Health check endpoint.

@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     RandomShlokaView, 
     ShlokaDetailView, 
+    ShlokaByChapterVerseView,
     HealthCheckView, 
     RootView,
     SignupView,
@@ -28,6 +29,7 @@ urlpatterns = [
     path('health', HealthCheckView.as_view(), name='health'),
     path('api/shlokas/random', RandomShlokaView.as_view(), name='shloka-random'),
     path('api/shlokas/mark-read', MarkShlokaReadView.as_view(), name='shloka-mark-read'),
+    path('api/shlokas/by-chapter-verse', ShlokaByChapterVerseView.as_view(), name='shloka-by-chapter-verse'),
     path('api/shlokas/<uuid:shloka_id>', ShlokaDetailView.as_view(), name='shloka-detail'),
     # Authentication endpoints
     path('api/auth/signup', SignupView.as_view(), name='signup'),
