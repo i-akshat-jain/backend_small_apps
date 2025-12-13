@@ -26,16 +26,23 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-k0c(80w%a#!4sojsrk2&1ft$-=8cl-^l-)58)@iipif*$p#%o%'
+# In production, this should be set via environment variable
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-k0c(80w%a#!4sojsrk2&1ft$-=8cl-^l-)58)@iipif*$p#%o%')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Base settings default to DEBUG=True for development
+DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
+# Base allowed hosts for development
 ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
     '10.0.2.2',  # Android emulator's special IP to access host machine
 ]
+
+# Add any additional hosts from environment variable
+if os.getenv('ALLOWED_HOSTS'):
+    ALLOWED_HOSTS.extend([host.strip() for host in os.getenv('ALLOWED_HOSTS').split(',')])
 
 
 # Application definition
@@ -171,7 +178,12 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Media files
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field

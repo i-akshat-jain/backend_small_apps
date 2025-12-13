@@ -24,3 +24,6 @@ pypdf==4.0.1
 # Celery for async task processing
 celery==5.3.4
 redis==5.0.1
+
+# Production server
+gunicorn==21.2.0
