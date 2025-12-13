@@ -7,7 +7,7 @@ This guide explains how to deploy the backend application to the server with Doc
 - **Server IP:** `77.42.43.141`
 - **SSH Access:** `root@77.42.43.141`
 - **SSH Key:** `~/.ssh/id_ed25519_personal`
-- **Domain:** `api.dharmsaar.gibberishtech.com`
+- **Domain:** `api.dharmasaar.gibberishtech.com`
 - **GitHub Repository:** `git@github.com-personal:i-akshat-jain/backend_small_apps.git`
 
 ## Prerequisites
@@ -16,8 +16,9 @@ This guide explains how to deploy the backend application to the server with Doc
 - ✅ Nginx installed on server (disabled, using Docker nginx)
 - ✅ Git installed on server
 - ✅ SSH key configured for GitHub access
-- ⚠️ Domain DNS pointing to server IP (needs verification)
-- ⚠️ SSL certificates (not yet configured)
+- ✅ Domain DNS pointing to server IP
+- ✅ SSL certificates configured (Let's Encrypt)
+- ✅ HTTPS enabled
 
 ## Directory Structure on Server
 
@@ -171,16 +172,21 @@ The `sync-files.sh` script automatically copies these files before each deployme
    - Ports: 80 (HTTP), 443 (HTTPS)
    - Reverse proxy to backend
    - Serves static files
+   - SSL certificates mounted from certbot volume
+   - HTTP to HTTPS redirect enabled
 
 3. **certbot** (`certbot`)
    - Image: `certbot/certbot`
-   - Auto-renews SSL certificates every 12 hours
+   - Auto-renews SSL certificates daily (only when within 30 days of expiry)
+   - Certificate storage: `/opt/nginx-proxy/certbot/conf`
+   - Webroot: `/opt/nginx-proxy/certbot/www`
 
 ### Docker Compose File
 
 Located at `/opt/docker-compose.yml`:
 - Uses Docker network: `app-network`
 - Volumes for persistent data (media, staticfiles, logs)
+- SSL certificate volume mounted to nginx: `./nginx-proxy/certbot/conf:/etc/letsencrypt:ro`
 - Health checks configured
 - Auto-restart on failure
 
@@ -194,51 +200,49 @@ Located at `/opt/docker-compose.yml`:
 - Containers created
 - Nginx proxy running
 - Certbot container running
+- **SSL certificates obtained** (Let's Encrypt)
+- **HTTPS enabled** with automatic HTTP to HTTPS redirect
+- Certificate auto-renewal configured (daily check, only renews when needed)
 
-### ⚠️ Issues
-- **Backend container restarting**: Worker failed to boot
-  - Check logs: `docker logs sanatan_backend`
-  - Likely causes: Database connection, missing environment variables, or settings error
+## SSL Certificate Setup ✅ (Completed)
 
-### 🔄 Pending
-- SSL certificate setup (not yet configured)
-- HTTPS not enabled
-- Backend container needs to be stable
+### Certificate Details
 
-## SSL Certificate Setup (Not Yet Done)
+- **Domain:** `api.dharmasaar.gibberishtech.com`
+- **Provider:** Let's Encrypt
+- **Certificate Location:** `/opt/nginx-proxy/certbot/conf/live/api.dharmasaar.gibberishtech.com/`
+- **Valid Until:** March 13, 2026 (auto-renewed before expiry)
+- **Email:** `admin@gibberishtech.com`
 
-### Step 1: Obtain SSL Certificate
+### How It Works
+
+1. **Initial Certificate:** Obtained manually using certbot webroot method
+2. **Auto-Renewal:** Certbot container runs daily and checks for renewal
+3. **Renewal Policy:** Only renews certificates within 30 days of expiry (safe from rate limits)
+4. **Deployment Safety:** Deployments don't trigger certificate renewals
+
+### Verify SSL
 
 ```bash
-cd /opt
-./setup-ssl.sh
+# Check HTTPS is working
+curl -I https://api.dharmasaar.gibberishtech.com
+
+# Check certificate details
+echo | openssl s_client -servername api.dharmasaar.gibberishtech.com -connect api.dharmasaar.gibberishtech.com:443 2>/dev/null | openssl x509 -noout -dates -subject
+
+# Check certificate expiry via certbot
+docker exec certbot certbot certificates
 ```
 
-**Note:** Update the email in `/opt/setup-ssl.sh` before running.
-
-This will:
-- Stop nginx temporarily
-- Run certbot to obtain certificate
-- Create symlinks for nginx
-
-### Step 2: Enable HTTPS
-
-After SSL certificate is obtained:
+### Manual Certificate Renewal (if needed)
 
 ```bash
-cd /opt
-./enable-https.sh
-```
+# Test renewal (dry run)
+docker exec certbot certbot renew --dry-run
 
-This will:
-- Update nginx configuration to enable HTTPS
-- Redirect HTTP to HTTPS
-- Restart nginx
-
-### Step 3: Verify
-
-```bash
-curl -I https://api.dharmsaar.gibberishtech.com
+# Force renewal (only if needed)
+docker exec certbot certbot renew --force-renewal
+docker restart nginx_proxy
 ```
 
 ## Updating the Application
@@ -360,11 +364,29 @@ docker exec -it sanatan_backend python manage.py check
 docker exec -it sanatan_backend python manage.py migrate
 ```
 
+### Nginx SSL Configuration
+
+The nginx configuration (`/opt/nginx-proxy/conf.d/api.conf`) includes:
+
+- **HTTPS server block** on port 443 with SSL certificates
+- **HTTP server block** on port 80 that:
+  - Allows certbot challenges at `/.well-known/acme-challenge/`
+  - Redirects all other traffic to HTTPS (301 redirect)
+- **SSL protocols:** TLSv1.2 and TLSv1.3
+- **Certificate paths:** 
+  - Certificate: `/etc/letsencrypt/live/api.dharmasaar.gibberishtech.com/fullchain.pem`
+  - Private key: `/etc/letsencrypt/live/api.dharmasaar.gibberishtech.com/privkey.pem`
+
 ### Nginx Not Working
 
 **Check nginx configuration:**
 ```bash
 docker exec nginx_proxy nginx -t
+```
+
+**Check SSL certificate access:**
+```bash
+docker exec nginx_proxy ls -la /etc/letsencrypt/live/api.dharmasaar.gibberishtech.com/
 ```
 
 **View nginx logs:**
@@ -423,17 +445,43 @@ ls -la /opt/backend_app/.env /opt/backend_app/manage.py
 
 ## SSL Certificate Renewal
 
-Certbot is configured to auto-renew certificates. The certbot container runs continuously and checks for renewal every 12 hours.
+### Auto-Renewal Configuration
 
-**Manual renewal:**
+Certbot is configured to **safely auto-renew** certificates:
+- **Check Frequency:** Daily (every 24 hours)
+- **Renewal Policy:** Only renews certificates within 30 days of expiry
+- **Rate Limit Safe:** Won't hit Let's Encrypt rate limits even with frequent deployments
+- **Deployment Impact:** Deployments don't trigger renewals (certbot runs independently)
+
+### How Renewal Works
+
+1. Certbot container runs continuously
+2. Every 24 hours, it runs `certbot renew --quiet --no-random-sleep-on-renew`
+3. Certbot checks if any certificate is within 30 days of expiry
+4. **Only renews if needed** - safe to deploy multiple times per day
+5. After renewal, nginx automatically picks up new certificates (volume mount)
+
+### Manual Operations
+
+**Check certificate status:**
 ```bash
-docker exec certbot certbot renew
+docker exec certbot certbot certificates
+```
+
+**Test renewal (dry run):**
+```bash
+docker exec certbot certbot renew --dry-run
+```
+
+**Force renewal (only if needed):**
+```bash
+docker exec certbot certbot renew --force-renewal
 docker restart nginx_proxy
 ```
 
-**Check certificate expiry:**
+**View certbot logs:**
 ```bash
-docker exec certbot certbot certificates
+docker logs certbot
 ```
 
 ## GitHub Actions Integration
@@ -478,11 +526,13 @@ jobs:
 1. ✅ Keep your `.env` file secure and never commit it to git
 2. ✅ Use strong SECRET_KEY in production
 3. ✅ Keep DEBUG=False in production
-4. ⚠️ SSL certificates not yet configured (HTTP only)
-5. ✅ Regularly update dependencies
-6. ✅ Monitor logs for suspicious activity
-7. ✅ SSH keys properly configured
-8. ✅ Docker containers isolated in network
+4. ✅ SSL certificates configured (HTTPS enabled)
+5. ✅ HTTP to HTTPS redirect enabled
+6. ✅ Certificate auto-renewal configured (rate-limit safe)
+7. ✅ Regularly update dependencies
+8. ✅ Monitor logs for suspicious activity
+9. ✅ SSH keys properly configured
+10. ✅ Docker containers isolated in network
 
 ## Quick Reference
 
@@ -518,12 +568,12 @@ cd /opt/backend_app && git pull origin main
 
 ## Next Steps
 
-1. ⚠️ Fix backend container restart issue
-2. ⚠️ Set up SSL certificates
-3. ⚠️ Enable HTTPS
-4. ⚠️ Verify domain DNS is pointing to server
-5. ⚠️ Test API endpoints
-6. ⚠️ Set up monitoring/logging
+1. ✅ SSL certificates configured
+2. ✅ HTTPS enabled
+3. ✅ Domain DNS verified
+4. ⚠️ Test API endpoints thoroughly
+5. ⚠️ Set up monitoring/logging
+6. ⚠️ Configure backup strategy
 
 ## Notes
 
@@ -531,4 +581,7 @@ cd /opt/backend_app && git pull origin main
 - Files edited in `/opt/` are automatically synced during deployment
 - Git repository is at `/opt/backend_app/`
 - Docker images are built fresh on each deployment (no cache)
-- Certbot runs in background for auto-renewal
+- Certbot runs in background for auto-renewal (daily checks, only renews when needed)
+- SSL certificates persist across deployments (stored in `/opt/nginx-proxy/certbot/conf`)
+- Deployments are safe - won't trigger unnecessary certificate renewals
+- Nginx configuration includes SSL and HTTP to HTTPS redirect
