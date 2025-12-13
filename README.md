@@ -19,14 +19,26 @@ Create a `.env` file in the `backend_apps` directory with the following variable
 
 ```bash
 # Database Connection (PostgreSQL/Supabase)
-# Option 1: Use individual parameters
+# Option 1: Use individual parameters with Connection Pooler (Recommended for Supabase)
+# Supabase direct connections require IPv6. Use the connection pooler for IPv4 compatibility (free).
+# Get pooler connection info from: Supabase Dashboard > Project Settings > Database > Connection Pooling
 DB_USER=postgres
 DB_PASSWORD=your_password
-DB_HOST=db.your-project.supabase.co
+DB_HOST=db.your-project.supabase.co  # Direct connection (IPv6 only, kept for reference)
 DB_PORT=5432
 DB_NAME=postgres
 
+# Connection Pooler Configuration (IPv4 compatible, free)
+# For persistent backends (Django): Use Session mode (port 5432) - RECOMMENDED
+# For serverless: Use Transaction mode (port 6543)
+# Session mode host format: aws-0-[region].pooler.supabase.com
+# Find this in Supabase Dashboard > Project Settings > Database > Connection Pooling > Session mode connection string
+USE_DB_POOLER=true
+DB_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com  # Replace with your pooler host from Session mode
+DB_POOLER_PORT=5432  # Session mode (recommended for persistent backends) or 6543 for transaction mode
+
 # Option 2: Use DATABASE_URL (full connection string)
+# For pooler: postgresql://user:password@aws-0-region.pooler.supabase.com:6543/postgres
 # DATABASE_URL=postgresql://user:password@host:port/dbname
 
 # Groq API Configuration
@@ -42,6 +54,26 @@ ENVIRONMENT=development
 # For production, specify exact origins: "https://your-domain.com,https://app.your-domain.com"
 CORS_ORIGINS=*
 ```
+
+#### Getting Supabase Connection Pooler Information
+
+1. Go to your [Supabase Dashboard](https://app.supabase.com/)
+2. Select your project
+3. Navigate to **Project Settings** > **Database**
+4. Scroll to **Connection Pooling** section
+5. For persistent backends (Django on VM), use **Session mode**:
+   - Copy the **Session mode** connection string
+   - Extract the pooler host from the connection string:
+     - Format: `aws-0-[region].pooler.supabase.com`
+     - Example: `aws-0-eu-central-1.pooler.supabase.com`
+   - Set `DB_POOLER_HOST` to this value
+   - Set `DB_POOLER_PORT=5432` (Session mode)
+6. For serverless/edge functions, use **Transaction mode**:
+   - Copy the **Transaction mode** connection string
+   - Use the same hostname as your direct connection
+   - Set `DB_POOLER_PORT=6543` (Transaction mode)
+   
+**Note:** Session mode is recommended for persistent Django backends as it supports prepared statements and maintains session state.
 
 ### 3. Database Setup
 

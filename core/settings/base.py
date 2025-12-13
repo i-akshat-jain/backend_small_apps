@@ -103,14 +103,38 @@ DB_PORT = os.getenv('DB_PORT') or os.getenv('port') or '5432'
 DB_NAME = os.getenv('DB_NAME') or os.getenv('dbname')
 DATABASE_URL = os.getenv('DATABASE_URL')
 
+# Supabase Connection Pooler Support (IPv4 compatible, free)
+# If using Supabase direct connection (IPv6 only), use the pooler instead
+# For persistent backends (Django on VM): Use Session mode (port 5432)
+# For serverless/edge functions: Use Transaction mode (port 6543)
+# Session mode host format: aws-0-[region].pooler.supabase.com
+# Transaction mode: Uses same hostname as direct connection but port 6543
+USE_POOLER = os.getenv('USE_DB_POOLER', 'true').lower() == 'true'
+DB_POOLER_HOST = os.getenv('DB_POOLER_HOST')  # e.g., aws-0-eu-central-1.pooler.supabase.com (session mode)
+DB_POOLER_PORT = os.getenv('DB_POOLER_PORT', '5432')  # Default to session mode (5432) for persistent backends
+
 # Configure database
 if DATABASE_URL:
     # Use DATABASE_URL if provided
     try:
         import dj_database_url
+        db_config = dj_database_url.parse(DATABASE_URL)
+        
+        # If using Supabase and pooler is enabled, switch to pooler
+        if USE_POOLER and DB_POOLER_HOST and 'supabase' in str(db_config.get('HOST', '')):
+            db_config['HOST'] = DB_POOLER_HOST
+            db_config['PORT'] = DB_POOLER_PORT
+            print(f"[Database] Using Supabase connection pooler: {DB_POOLER_HOST}:{DB_POOLER_PORT}")
+        
         DATABASES = {
-            'default': dj_database_url.parse(DATABASE_URL)
+            'default': db_config
         }
+        
+        # Add SSL options for Supabase
+        if 'supabase' in str(db_config.get('HOST', '')) or 'pooler.supabase.com' in str(db_config.get('HOST', '')):
+            if 'OPTIONS' not in DATABASES['default']:
+                DATABASES['default']['OPTIONS'] = {}
+            DATABASES['default']['OPTIONS']['sslmode'] = 'require'
     except ImportError:
         # Fallback if dj-database-url is not installed
         DATABASES = {
@@ -121,16 +145,27 @@ if DATABASE_URL:
         }
 elif all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
     # Construct from individual components
+    # Use pooler if configured and host is Supabase direct connection
+    final_host = DB_HOST
+    final_port = DB_PORT
+    
+    if USE_POOLER and DB_POOLER_HOST and ('supabase.co' in DB_HOST or 'supabase.com' in DB_HOST):
+        final_host = DB_POOLER_HOST
+        final_port = DB_POOLER_PORT
+        print(f"[Database] Using Supabase connection pooler: {final_host}:{final_port}")
+        print(f"[Database] Original direct connection: {DB_HOST}:{DB_PORT} (IPv6 only)")
+    
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
             'NAME': DB_NAME,
             'USER': DB_USER,
             'PASSWORD': DB_PASSWORD,
-            'HOST': DB_HOST,
-            'PORT': DB_PORT,
+            'HOST': final_host,
+            'PORT': final_port,
             'OPTIONS': {
-                'sslmode': 'require' if 'supabase.co' in DB_HOST or 'supabase.com' in DB_HOST else None,
+                'sslmode': 'require' if 'supabase' in final_host or 'pooler.supabase.com' in final_host else None,
+                'connect_timeout': '10',
             },
         }
     }

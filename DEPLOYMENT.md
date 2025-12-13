@@ -7,7 +7,8 @@ This guide explains how to deploy the backend application to the server with Doc
 - **Server IP:** `77.42.43.141`
 - **SSH Access:** `root@77.42.43.141`
 - **SSH Key:** `~/.ssh/id_ed25519_personal`
-- **Domain:** `api.dharmasaar.gibberishtech.com`
+- **Backend Domain:** `api.dharmasaar.gibberishtech.com`
+- **Frontend Domain:** `gibberishtech.com`
 - **GitHub Repository:** `git@github.com-personal:i-akshat-jain/backend_small_apps.git`
 
 ## Prerequisites
@@ -38,10 +39,16 @@ This guide explains how to deploy the backend application to the server with Doc
 │   │   ├── wsgi.py           # WSGI config (synced from /opt/wsgi.py)
 │   │   └── asgi.py           # ASGI config (synced from /opt/asgi.py)
 │   └── apps/                 # Django apps
+├── gibberishtech/            # Frontend Next.js application
+│   ├── Dockerfile            # Frontend Docker build configuration
+│   ├── package.json          # Node.js dependencies
+│   ├── next.config.js        # Next.js configuration
+│   └── app/                  # Next.js app directory
 ├── nginx-proxy/              # Nginx configuration
 │   ├── nginx.conf            # Main nginx configuration
 │   ├── conf.d/
-│   │   └── api.conf          # API domain configuration
+│   │   ├── api.conf          # API domain configuration
+│   │   └── gibberishtech.conf # Frontend domain configuration
 │   ├── ssl/                  # SSL certificates (symlinks)
 │   ├── certbot/              # Certbot certificates
 │   │   ├── conf/             # Let's Encrypt certificates
@@ -167,15 +174,24 @@ The `sync-files.sh` script automatically copies these files before each deployme
    - Settings: `core.settings.prod`
    - Environment: Production
 
-2. **nginx** (`nginx_proxy`)
+2. **frontend** (`gibberishtech_frontend`)
+   - Image: Built from `/opt/gibberishtech/Dockerfile`
+   - Port: 3000 (internal)
+   - Next.js application
+   - Standalone build mode
+
+3. **nginx** (`nginx_proxy`)
    - Image: `nginx:alpine`
    - Ports: 80 (HTTP), 443 (HTTPS)
-   - Reverse proxy to backend
+   - Reverse proxy to backend and frontend
    - Serves static files
    - SSL certificates mounted from certbot volume
    - HTTP to HTTPS redirect enabled
+   - Routes:
+     - `api.dharmasaar.gibberishtech.com` → backend:8000
+     - `gibberishtech.com` → frontend:3000
 
-3. **certbot** (`certbot`)
+4. **certbot** (`certbot`)
    - Image: `certbot/certbot`
    - Auto-renews SSL certificates daily (only when within 30 days of expiry)
    - Certificate storage: `/opt/nginx-proxy/certbot/conf`
@@ -544,9 +560,11 @@ cd /opt && ./deploy.sh
 
 # View logs
 docker logs -f sanatan_backend
+docker logs -f gibberishtech_frontend
 
-# Restart backend
+# Restart services
 docker restart sanatan_backend
+docker restart gibberishtech_frontend
 
 # Check status
 docker ps
@@ -561,19 +579,67 @@ cd /opt/backend_app && git pull origin main
 ### File Locations
 
 - **Edit files:** `/opt/.env`, `/opt/manage.py`, `/opt/wsgi.py`, `/opt/asgi.py`
-- **Deployed files:** `/opt/backend_app/`
+- **Deployed files:** `/opt/backend_app/`, `/opt/gibberishtech/`
 - **Docker compose:** `/opt/docker-compose.yml`
-- **Nginx config:** `/opt/nginx-proxy/conf.d/api.conf`
+- **Nginx config:** `/opt/nginx-proxy/conf.d/api.conf`, `/opt/nginx-proxy/conf.d/gibberishtech.conf`
 - **Logs:** `/opt/nginx-proxy/logs/`, `/opt/backend_app/logs/`
+
+## Frontend Setup
+
+### Initial Frontend Deployment
+
+1. **Copy frontend code to server:**
+   ```bash
+   # From local machine
+   scp -i ~/.ssh/id_ed25519_personal -r gibberishtech root@77.42.43.141:/opt/
+   ```
+
+2. **Set up SSL certificate for gibberishtech.com:**
+   ```bash
+   # SSH to server
+   ssh -i ~/.ssh/id_ed25519_personal root@77.42.43.141
+   
+   # Ensure DNS is pointing to server IP
+   # Then run certbot to get certificate
+   docker exec certbot certbot certonly --webroot \
+     -w /var/www/certbot \
+     -d gibberishtech.com \
+     -d www.gibberishtech.com \
+     --email admin@gibberishtech.com \
+     --agree-tos \
+     --non-interactive
+   ```
+
+3. **Deploy:**
+   ```bash
+   cd /opt
+   ./deploy.sh
+   ```
+
+### Updating Frontend
+
+```bash
+# Option 1: Copy updated files from local
+scp -i ~/.ssh/id_ed25519_personal -r gibberishtech root@77.42.43.141:/opt/
+
+# Option 2: Edit directly on server
+ssh -i ~/.ssh/id_ed25519_personal root@77.42.43.141
+cd /opt/gibberishtech
+# Make changes
+cd /opt
+./deploy.sh
+```
 
 ## Next Steps
 
 1. ✅ SSL certificates configured
 2. ✅ HTTPS enabled
 3. ✅ Domain DNS verified
-4. ⚠️ Test API endpoints thoroughly
-5. ⚠️ Set up monitoring/logging
-6. ⚠️ Configure backup strategy
+4. ⚠️ Set up SSL certificate for gibberishtech.com
+5. ⚠️ Test API endpoints thoroughly
+6. ⚠️ Test frontend deployment
+7. ⚠️ Set up monitoring/logging
+8. ⚠️ Configure backup strategy
 
 ## Notes
 

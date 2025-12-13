@@ -30,3 +30,9 @@ wheels/
  
 deploy.sh
 deploy-server.sh
+
+# Nginx runtime files (logs, certificates, etc.)
+nginx-proxy/logs/
+nginx-proxy/ssl/
+nginx-proxy/certbot/
+nginx-proxy/*.log
