@@ -56,6 +56,6 @@ echo "Restarting nginx..."
 docker restart nginx_proxy || true
 
 echo "=== Deployment Complete ==="
-echo "Backend: http://api.dharmsaar.gibberishtech.com"
+echo "Backend: http://api.dharmasaar.gibberishtech.com"
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 

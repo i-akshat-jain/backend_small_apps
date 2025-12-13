@@ -9,14 +9,14 @@ services:
       - DJANGO_SETTINGS_MODULE=core.settings.prod
       - DJANGO_ENV=production
       - DEBUG=False
-      - ALLOWED_HOSTS=api.dharmsaar.gibberishtech.com,localhost,127.0.0.1
+      - ALLOWED_HOSTS=api.dharmasaar.gibberishtech.com,localhost,127.0.0.1
     env_file:
       - .env
     networks:
       - app-network
     volumes:
       - ./media:/app/media
-      - ./staticfiles:/app/staticfiles
+      - ./staticfiles:/app/core/staticfiles
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/admin/"]
