@@ -26,8 +26,8 @@ DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
 # Base allowed hosts for development
 ALLOWED_HOSTS = [
-    'dharmsaar.gibberishtech.com',
-    'api.dharmsaar.gibberishtech.com',
+    'dharmasaar.gibberishtech.com',
+    'api.dharmasaar.gibberishtech.com',
 ]
 
 # Add any additional hosts from environment variable
